@@ -1,497 +1,414 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
-import Link from 'next/link';
 import { 
-    LayoutDashboard, Package, TrendingUp, TrendingDown, 
-    AlertTriangle, DollarSign, Activity, Calendar, PieChart as PieIcon, ArrowRight, Clock, Box, ShieldCheck, Zap, Users, Home, X
+    Activity, Package, TrendingUp, AlertTriangle, 
+    ArrowRight, Clock, Box, ShoppingCart, Truck, ShieldAlert, Calendar
 } from 'lucide-react';
 import { 
-    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-    PieChart, Pie, Cell, Legend 
+    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, 
+    Legend, ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts';
+import Link from 'next/link';
+
+const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#f43f5e', '#0ea5e9', '#8b5cf6'];
 
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
-  
-  // States สำหรับเก็บข้อมูลสถิติ
-  const [stats, setStats] = useState({
-      totalValue: 0,
-      totalItems: 0,
-      totalBranches: 0,
-      totalVendors: 0,
-      lowStockCount: 0,
-      inboundToday: 0,
-      outboundToday: 0,
-      inboundValToday: 0,
-      outboundValToday: 0
+
+  // --- Filter States ---
+  const [startDate, setStartDate] = useState(() => {
+      const d = new Date(); d.setMonth(d.getMonth() - 3);
+      return d.toISOString().split('T')[0];
   });
+  const [endDate, setEndDate] = useState(() => new Date().toISOString().split('T')[0]);
 
-  // States สำหรับกราฟและลิสต์
-  const [graphData, setGraphData] = useState<any[]>([]); 
-  const [categoryData, setCategoryData] = useState<any[]>([]); 
+  // --- States สำหรับข้อมูล ---
+  const [kpi, setKpi] = useState({
+      totalOutbound: 0,
+      totalInbound: 0,
+      lowStockCount: 0,
+      pendingPOs: 0
+  });
+  
+  const [trendData, setTrendData] = useState<any[]>([]);
+  const [categoryData, setCategoryData] = useState<any[]>([]);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
-  const [recentTrans, setRecentTrans] = useState<any[]>([]);
-
-  // State สำหรับ Interactive Modal
-  const [selectedTx, setSelectedTx] = useState<any | null>(null);
-
-  // โทนสีล้ำสมัย (Neon / Cyberpunk)
-  const COLORS = ['#06b6d4', '#8b5cf6', '#d946ef', '#f43f5e', '#10b981', '#f59e0b'];
-
-  const fetchDashboardData = useCallback(async () => {
-      setLoading(true);
-      try {
-          // 1. ดึง Master Data Counts
-          const { count: branchesCount } = await supabase.from('master_branches').select('*', { count: 'exact', head: true });
-          const { count: vendorsCount } = await supabase.from('master_vendors').select('*', { count: 'exact', head: true });
-
-          // 2. ดึง Master Products และ Inventory Lots
-          const { data: productsData } = await supabase.from('master_products').select('product_id, product_name, category, standard_cost, min_stock, base_uom, status');
-          const { data: lotsData } = await supabase.from('inventory_lots').select('product_id, quantity');
-          
-          const products = productsData || [];
-          const productMap: Record<string, any> = {};
-          products.forEach(p => productMap[p.product_id] = p);
-
-          const stockMap: Record<string, number> = {};
-          (lotsData || []).forEach((lot: any) => {
-              stockMap[lot.product_id] = (stockMap[lot.product_id] || 0) + Number(lot.quantity);
-          });
-
-          // --- คำนวณ Overview Stats & Low Stock ---
-          let tValue = 0;
-          let tItems = 0; 
-          let lowStockArr: any[] = [];
-          const catMap: Record<string, number> = {};
-
-          products.forEach(p => {
-              const currentQty = stockMap[p.product_id] || 0;
-              const minStock = Number(p.min_stock) || 0;
-              const cost = Number(p.standard_cost) || 0;
-
-              if (currentQty > 0) {
-                  tItems += 1;
-                  const itemValue = currentQty * cost;
-                  tValue += itemValue;
-
-                  const cat = p.category || 'Uncategorized';
-                  catMap[cat] = (catMap[cat] || 0) + itemValue;
-              }
-
-              if (currentQty <= minStock && p.status === 'ACTIVE') {
-                  lowStockArr.push({
-                      id: p.product_id,
-                      name: p.product_name,
-                      stock: currentQty,
-                      min: minStock,
-                      unit: p.base_uom || 'Unit'
-                  });
-              }
-          });
-
-          const pieData = Object.keys(catMap).map(key => ({
-              name: key,
-              value: catMap[key]
-          })).sort((a, b) => b.value - a.value).slice(0, 5);
-
-          // 3. ดึง Transaction Log ย้อนหลัง 7 วัน
-          const sevenDaysAgo = new Date();
-          sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-          sevenDaysAgo.setHours(0, 0, 0, 0);
-
-          const { data: txsData } = await supabase
-              .from('transactions_log')
-              .select('*')
-              .gte('transaction_date', sevenDaysAgo.toISOString())
-              .order('transaction_date', { ascending: false });
-
-          const txs = txsData || [];
-
-          // --- คำนวณ Today Stats & กราฟ 7 วัน ---
-          const todayStr = new Date().toISOString().split('T')[0];
-          let inToday = 0; let outToday = 0;
-          let inValToday = 0; let outValToday = 0;
-          const recentLogs: any[] = [];
-          const dailyDataMap: Record<string, { Inbound: number, Outbound: number }> = {};
-          
-          for (let i = 6; i >= 0; i--) {
-              const d = new Date(); d.setDate(d.getDate() - i);
-              dailyDataMap[d.toISOString().split('T')[0]] = { Inbound: 0, Outbound: 0 };
-          }
-
-          txs.forEach((t: any) => {
-              const dateStr = new Date(t.transaction_date).toISOString().split('T')[0];
-              const qty = Math.abs(Number(t.quantity_change) || 0);
-              const cost = Number(productMap[t.product_id]?.standard_cost) || 0;
-              const val = qty * cost;
-
-              // เก็บ History 15 รายการล่าสุดสำหรับ List
-              if (recentLogs.length < 15) {
-                  recentLogs.push({
-                      id: t.transaction_id,
-                      type: t.transaction_type,
-                      product_id: t.product_id,
-                      product_name: productMap[t.product_id]?.product_name || 'Unknown',
-                      qty: t.quantity_change,
-                      balance: t.balance_after,
-                      remarks: t.remarks,
-                      date: new Date(t.transaction_date)
-                  });
-              }
-
-              if (dateStr === todayStr) {
-                  if (t.transaction_type === 'INBOUND' || Number(t.quantity_change) > 0) {
-                      inToday += qty; inValToday += val;
-                  } else {
-                      outToday += qty; outValToday += val;
-                  }
-              }
-
-              if (dailyDataMap[dateStr]) {
-                  if (t.transaction_type === 'INBOUND' || Number(t.quantity_change) > 0) dailyDataMap[dateStr].Inbound += qty;
-                  else dailyDataMap[dateStr].Outbound += qty;
-              }
-          });
-
-          const barData = Object.keys(dailyDataMap).sort().map(dateStr => {
-              const d = new Date(dateStr);
-              return { name: `${d.getDate()}/${d.getMonth()+1}`, Inbound: dailyDataMap[dateStr].Inbound, Outbound: dailyDataMap[dateStr].Outbound };
-          });
-
-          // Set All States
-          setStats({
-              totalValue: tValue,
-              totalItems: tItems,
-              totalBranches: branchesCount || 0,
-              totalVendors: vendorsCount || 0,
-              lowStockCount: lowStockArr.length,
-              inboundToday: inToday,
-              outboundToday: outToday,
-              inboundValToday: inValToday,
-              outboundValToday: outValToday
-          });
-          setLowStockItems(lowStockArr.sort((a,b) => a.stock - b.stock).slice(0, 10));
-          setCategoryData(pieData);
-          setGraphData(barData);
-          setRecentTrans(recentLogs);
-
-      } catch (error) {
-          console.error("Error loading dashboard data:", error);
-      }
-      setLoading(false);
-  }, []);
+  const [recentTx, setRecentTx] = useState<any[]>([]);
 
   useEffect(() => {
       fetchDashboardData();
-  }, [fetchDashboardData]);
+  }, [startDate, endDate]);
+
+  const fetchDashboardData = async () => {
+      setLoading(true);
+      try {
+          // 1. ดึงข้อมูล Master และ สต๊อก
+          const [prodRes, lotRes, poRes] = await Promise.all([
+              supabase.from('master_products').select('product_id, product_name, category, min_stock, base_uom'),
+              supabase.from('inventory_lots').select('product_id, quantity'),
+              supabase.from('purchase_orders').select('po_number').in('status', ['PENDING', 'PARTIAL'])
+          ]);
+
+          const products = prodRes.data || [];
+          const lots = lotRes.data || [];
+          const pendingPOs = poRes.data?.length || 0;
+
+          // คำนวณหา Low stock แจ้งเตือน
+          const stockMap: Record<string, number> = {};
+          lots.forEach(l => {
+              stockMap[l.product_id] = (stockMap[l.product_id] || 0) + Number(l.quantity);
+          });
+
+          const lowStock: any[] = [];
+          products.forEach(p => {
+              const currentStock = stockMap[p.product_id] || 0;
+              if (currentStock <= (p.min_stock || 0)) {
+                  lowStock.push({ ...p, current_stock: currentStock, deficit: (p.min_stock || 0) - currentStock });
+              }
+          });
+
+          // 🟢 2. เรียกใช้ RPC เพื่อให้ Database บวกเลข KPI ให้ (แม่นยำ 100% ยอดไม่ตกหล่น และเร็วมาก)
+          const { data: rpcData, error: rpcError } = await supabase.rpc('get_dashboard_kpis', {
+              start_date: `${startDate}T00:00:00.000Z`,
+              end_date: `${endDate}T23:59:59.999Z`
+          });
+
+          if (rpcError) console.error("RPC Error:", rpcError);
+
+          const totalInboundRPC = rpcData?.[0]?.total_inbound || 0;
+          const totalOutboundRPC = rpcData?.[0]?.total_outbound || 0;
+
+          // 🟢 3. ดึง Transaction แค่ 5,000 รายการล่าสุด เพื่อเอามาวาดกราฟ Trend และตารางล่าสุด (ป้องกันเว็บค้าง)
+          const { data: txData } = await supabase
+              .from('transactions_log')
+              .select('*')
+              .gte('transaction_date', `${startDate}T00:00:00.000Z`)
+              .lte('transaction_date', `${endDate}T23:59:59.999Z`)
+              .order('transaction_date', { ascending: false })
+              .limit(5000); 
+
+          const transactions = txData || [];
+
+          const catMap: Record<string, number> = {};
+          const trendMap: Record<string, { in: number, out: number }> = {};
+
+          const sDate = new Date(startDate);
+          const eDate = new Date(endDate);
+          const diffDays = Math.ceil((eDate.getTime() - sDate.getTime()) / (1000 * 3600 * 24));
+          const groupByMonth = diffDays > 31; // ถ้าดูเกิน 31 วัน ให้แสดงผลกราฟเป็นรายเดือน
+
+          transactions.forEach(tx => {
+              const pInfo = products.find(p => p.product_id === tx.product_id);
+              const qty = Math.abs(Number(tx.quantity_change));
+              const txDate = new Date(tx.transaction_date);
+              
+              let dateKey = '';
+              if (groupByMonth) {
+                  dateKey = txDate.toISOString().slice(0, 7);
+              } else {
+                  dateKey = txDate.toISOString().split('T')[0];
+              }
+              
+              if (!trendMap[dateKey]) trendMap[dateKey] = { in: 0, out: 0 };
+
+              if (tx.transaction_type === 'OUTBOUND') {
+                  trendMap[dateKey].out += qty;
+                  const cat = pInfo?.category || 'ไม่ระบุหมวดหมู่';
+                  catMap[cat] = (catMap[cat] || 0) + qty;
+              } else if (tx.transaction_type === 'INBOUND') {
+                  trendMap[dateKey].in += qty;
+              }
+          });
+
+          const formattedTrend = Object.keys(trendMap).sort().map(key => {
+              let nameLabel = '';
+              if (groupByMonth) {
+                  const [y, m] = key.split('-');
+                  nameLabel = new Date(Number(y), Number(m)-1).toLocaleDateString('th-TH', { month: 'short', year: '2-digit' });
+              } else {
+                  nameLabel = new Date(key).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
+              }
+              return {
+                  date: nameLabel,
+                  'รับเข้า': trendMap[key].in,
+                  'จ่ายออก': trendMap[key].out
+              };
+          });
+
+          const formattedCategory = Object.keys(catMap).map(cat => ({
+              name: cat,
+              value: catMap[cat]
+          })).sort((a, b) => b.value - a.value);
+
+          // 🟢 4. นำข้อมูลลง State (ใช้ค่ายอดรวมที่ได้จาก RPC มาโชว์ในการ์ด)
+          setKpi({
+              totalOutbound: totalOutboundRPC,
+              totalInbound: totalInboundRPC,
+              lowStockCount: lowStock.length,
+              pendingPOs: pendingPOs
+          });
+          
+          setCategoryData(formattedCategory);
+          setTrendData(formattedTrend);
+          setLowStockItems(lowStock.sort((a, b) => b.deficit - a.deficit).slice(0, 5));
+          
+          const recent = transactions.slice(0, 5).map(tx => ({
+              ...tx,
+              product_name: products.find(p => p.product_id === tx.product_id)?.product_name || 'Unknown'
+          }));
+          setRecentTx(recent);
+
+      } catch (error) {
+          console.error("Error fetching dashboard:", error);
+      }
+      setLoading(false);
+  };
+
+  const CustomTooltip = ({ active, payload }: any) => {
+      if (active && payload && payload.length) {
+          return (
+              <div className="bg-white p-3 rounded-xl shadow-lg border border-slate-100 text-sm font-bold">
+                  <div className="text-slate-500 mb-1">{payload[0].name || payload[0].payload.date}</div>
+                  {payload.map((entry: any, index: number) => (
+                      <div key={index} style={{ color: entry.color }} className="flex justify-between gap-4">
+                          <span>{entry.name}:</span>
+                          <span>{Number(entry.value).toLocaleString()}</span>
+                      </div>
+                  ))}
+              </div>
+          );
+      }
+      return null;
+  };
+
+  if (loading) {
+      return (
+          <div className="h-full flex flex-col items-center justify-center text-cyan-600 bg-slate-50">
+              <Activity size={48} className="animate-spin mb-4"/>
+              <span className="font-bold tracking-widest uppercase">Syncing Live Data...</span>
+          </div>
+      );
+  }
 
   return (
-    <div className="p-6 bg-slate-50 h-full flex flex-col overflow-y-auto rounded-2xl relative font-sans selection:bg-cyan-200">
+    <div className="p-4 md:p-6 h-full bg-slate-50 flex flex-col font-sans overflow-y-auto custom-scrollbar">
       
       {/* --- HEADER --- */}
-      <div className="mb-6 flex flex-col md:flex-row md:justify-between md:items-end gap-4">
-        <div>
-            <h1 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-slate-800 via-slate-700 to-cyan-700 flex items-center gap-3 tracking-tight">
-                <div className="p-2 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-xl shadow-lg shadow-cyan-200/50">
-                    <Activity size={24} className="text-white" />
-                </div>
-                Command Center
-            </h1>
-            <p className="text-slate-500 text-sm mt-2 flex items-center gap-2 font-medium">
-                <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span></span>
-                Live Database Connected
-            </p>
-        </div>
-        <div className="text-xs font-bold text-slate-500 flex items-center gap-4 bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-sm">
-            <div className="flex items-center gap-1"><Home size={14} className="text-emerald-500"/> {stats.totalBranches} สาขา</div>
-            <div className="w-px h-4 bg-slate-200"></div>
-            <div className="flex items-center gap-1"><Users size={14} className="text-fuchsia-500"/> {stats.totalVendors} คู่ค้า</div>
-            <div className="w-px h-4 bg-slate-200"></div>
-            <div className="flex items-center gap-2 text-cyan-600"><Calendar size={14}/> {new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' })}</div>
-        </div>
+      <div className="flex flex-col md:flex-row justify-between md:items-center mb-6 gap-4 shrink-0">
+          <div>
+              <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+                  <Activity className="text-cyan-500"/> Executive Dashboard
+              </h1>
+              <p className="text-slate-500 text-sm mt-1">ภาพรวมคลังสินค้าและการเคลื่อนไหว (กรองตามช่วงวันที่)</p>
+          </div>
+          
+          <div className="flex items-center gap-2 bg-white p-2.5 rounded-xl shadow-sm border border-slate-200 w-full md:w-auto">
+              <Calendar size={18} className="text-indigo-500 ml-1 shrink-0"/>
+              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer w-full md:w-auto"/>
+              <span className="text-slate-400 font-bold">-</span>
+              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer w-full md:w-auto pr-1"/>
+          </div>
       </div>
 
-      {loading ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
-            <Zap size={48} className="animate-pulse mb-4 text-cyan-500 opacity-50"/>
-            <p className="text-lg font-bold tracking-widest uppercase">Syncing Data...</p>
-        </div>
-      ) : (
-        <>
-          {/* --- KPI CARDS (Sci-Fi Glassmorphism) --- */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-              
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 hover:shadow-[0_0_25px_rgba(6,182,212,0.15)] hover:border-cyan-300 transition-all duration-300 relative overflow-hidden group">
-                  <div className="absolute -right-6 -top-6 w-32 h-32 bg-gradient-to-br from-cyan-100 to-transparent rounded-full opacity-50 group-hover:scale-150 transition-transform duration-700"></div>
-                  <div className="relative z-10">
-                      <div className="text-slate-500 font-bold text-xs uppercase tracking-wider mb-2 flex items-center justify-between">
-                          Total Investment <DollarSign size={14} className="text-cyan-500"/>
-                      </div>
-                      <div className="text-3xl font-black text-slate-800 mb-2 tracking-tight">฿{(stats.totalValue / 1000).toFixed(1)}<span className="text-lg text-slate-400">k</span></div>
-                      <div className="text-[10px] text-cyan-700 font-bold bg-cyan-50 w-max px-2 py-1 rounded-md border border-cyan-100 flex items-center gap-1">
-                          <ShieldCheck size={12}/> {stats.totalItems} Active SKUs
-                      </div>
+      {/* --- KPI CARDS (🟢 ปรับให้กดคลิกเพื่อไปดูข้อมูลจริงได้) --- */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6 shrink-0">
+          
+          <Link href="/branch-report" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover:ring-2 hover:ring-blue-400 cursor-pointer transition-all">
+              <div className="absolute -right-6 -top-6 w-24 h-24 bg-blue-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+              <div className="relative z-10 flex-1">
+                  <div className="flex justify-between items-start mb-2">
+                      <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center"><Truck size={20}/></div>
+                      <ArrowRight size={16} className="text-slate-300 group-hover:text-blue-500 transition-colors"/>
                   </div>
+                  <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Total Outbound (จ่ายออก)</div>
+                  <div className="text-xl md:text-2xl font-black text-slate-800 truncate">{kpi.totalOutbound.toLocaleString()} <span className="text-xs text-slate-400">หน่วย</span></div>
               </div>
+          </Link>
 
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 hover:shadow-[0_0_25px_rgba(16,185,129,0.15)] hover:border-emerald-300 transition-all duration-300 relative overflow-hidden group">
-                  <div className="absolute -right-6 -top-6 w-32 h-32 bg-gradient-to-br from-emerald-100 to-transparent rounded-full opacity-50 group-hover:scale-150 transition-transform duration-700"></div>
-                  <div className="relative z-10">
-                      <div className="text-slate-500 font-bold text-xs uppercase tracking-wider mb-2 flex items-center justify-between">
-                          Today Inbound <TrendingUp size={14} className="text-emerald-500"/>
-                      </div>
-                      <div className="text-3xl font-black text-slate-800 mb-2 tracking-tight">{stats.inboundToday.toLocaleString()} <span className="text-sm text-slate-400 font-medium">Qty</span></div>
-                      <div className="text-[10px] text-emerald-700 font-bold bg-emerald-50 w-max px-2 py-1 rounded-md border border-emerald-100">
-                          มูลค่า: ฿{stats.inboundValToday.toLocaleString()}
-                      </div>
+          <Link href="/transactions" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover:ring-2 hover:ring-emerald-400 cursor-pointer transition-all">
+              <div className="absolute -right-6 -top-6 w-24 h-24 bg-emerald-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+              <div className="relative z-10 flex-1">
+                  <div className="flex justify-between items-start mb-2">
+                      <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center"><Package size={20}/></div>
+                      <ArrowRight size={16} className="text-slate-300 group-hover:text-emerald-500 transition-colors"/>
                   </div>
+                  <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Total Inbound (รับเข้า)</div>
+                  <div className="text-xl md:text-2xl font-black text-emerald-600">{kpi.totalInbound.toLocaleString()} <span className="text-xs text-slate-400">หน่วย</span></div>
               </div>
+          </Link>
 
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 hover:shadow-[0_0_25px_rgba(244,63,94,0.15)] hover:border-rose-300 transition-all duration-300 relative overflow-hidden group">
-                  <div className="absolute -right-6 -top-6 w-32 h-32 bg-gradient-to-br from-rose-100 to-transparent rounded-full opacity-50 group-hover:scale-150 transition-transform duration-700"></div>
-                  <div className="relative z-10">
-                      <div className="text-slate-500 font-bold text-xs uppercase tracking-wider mb-2 flex items-center justify-between">
-                          Today Outbound <TrendingDown size={14} className="text-rose-500"/>
-                      </div>
-                      <div className="text-3xl font-black text-slate-800 mb-2 tracking-tight">{stats.outboundToday.toLocaleString()} <span className="text-sm text-slate-400 font-medium">Qty</span></div>
-                      <div className="text-[10px] text-rose-700 font-bold bg-rose-50 w-max px-2 py-1 rounded-md border border-rose-100">
-                          มูลค่า: ฿{stats.outboundValToday.toLocaleString()}
-                      </div>
+          <Link href="/warehouse" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover:ring-2 hover:ring-rose-400 cursor-pointer transition-all">
+              <div className="absolute -right-6 -top-6 w-24 h-24 bg-rose-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+              <div className="relative z-10 flex-1">
+                  <div className="flex justify-between items-start mb-2">
+                      <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center"><AlertTriangle size={20}/></div>
+                      <ArrowRight size={16} className="text-slate-300 group-hover:text-rose-500 transition-colors"/>
                   </div>
+                  <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Low Stock Alerts</div>
+                  <div className="text-xl md:text-2xl font-black text-rose-600">{kpi.lowStockCount} <span className="text-xs text-slate-400">SKUs</span></div>
               </div>
+          </Link>
 
-              <div className={`bg-white p-6 rounded-2xl shadow-sm border transition-all duration-300 relative overflow-hidden group ${stats.lowStockCount > 0 ? 'border-orange-300 shadow-[0_0_15px_rgba(249,115,22,0.1)]' : 'border-slate-200'}`}>
-                  <div className={`absolute -right-6 -top-6 w-32 h-32 rounded-full opacity-50 group-hover:scale-150 transition-transform duration-700 ${stats.lowStockCount > 0 ? 'bg-gradient-to-br from-orange-100 to-transparent' : 'bg-slate-50'}`}></div>
-                  <div className="relative z-10">
-                      <div className="text-slate-500 font-bold text-xs uppercase tracking-wider mb-2 flex items-center justify-between">
-                          Stock Warning <AlertTriangle size={14} className={stats.lowStockCount > 0 ? "text-orange-500" : "text-slate-400"}/>
-                      </div>
-                      <div className={`text-3xl font-black mb-2 tracking-tight ${stats.lowStockCount > 0 ? 'text-orange-600' : 'text-slate-800'}`}>{stats.lowStockCount} <span className="text-sm font-medium text-slate-400">SKUs</span></div>
-                      {stats.lowStockCount > 0 ? (
-                          <div className="text-[10px] text-orange-700 font-bold bg-orange-50 w-max px-2 py-1 rounded-md border border-orange-200 flex items-center gap-1 animate-pulse">
-                              ต้องการสั่งซื้อด่วน
-                          </div>
-                      ) : (
-                          <div className="text-[10px] text-slate-500 font-bold bg-slate-100 w-max px-2 py-1 rounded-md border border-slate-200 flex items-center gap-1">
-                              สต๊อกอยู่ในเกณฑ์ปกติ
-                          </div>
-                      )}
+          <Link href="/inbound" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover:ring-2 hover:ring-amber-400 cursor-pointer transition-all">
+              <div className="absolute -right-6 -top-6 w-24 h-24 bg-amber-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+              <div className="relative z-10 flex-1">
+                  <div className="flex justify-between items-start mb-2">
+                      <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center"><Clock size={20}/></div>
+                      <ArrowRight size={16} className="text-slate-300 group-hover:text-amber-500 transition-colors"/>
                   </div>
+                  <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Pending POs</div>
+                  <div className="text-xl md:text-2xl font-black text-slate-800">{kpi.pendingPOs} <span className="text-xs text-slate-400">POs</span></div>
               </div>
-          </div>
+          </Link>
+      </div>
 
-          {/* --- CHARTS SECTION --- */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-              {/* Bar Chart */}
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 lg:col-span-2">
-                  <div className="flex justify-between items-center mb-6">
-                      <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                          <Activity size={16} className="text-fuchsia-500"/> Volume Trend (7 Days)
-                      </h2>
-                  </div>
-                  <div className="h-64 w-full">
+      {/* --- CHARTS SECTION --- */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6 shrink-0">
+          
+          {/* Trend Bar Chart */}
+          <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border border-slate-200 lg:col-span-2">
+              <h2 className="text-sm md:text-base font-bold text-slate-800 mb-6 flex items-center gap-2">
+                  <TrendingUp className="text-indigo-500 w-5 h-5"/> ความเคลื่อนไหว รับเข้า-จ่ายออก
+              </h2>
+              <div className="w-full h-64 md:h-72">
+                  {trendData.length === 0 ? (
+                      <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">ไม่พบข้อมูลความเคลื่อนไหว</div>
+                  ) : (
                       <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={graphData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
-                              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8', fontWeight: 'bold'}} dy={10}/>
-                              <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8', fontWeight: 'bold'}}/>
-                              <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)'}}/>
-                              <Legend iconType="circle" wrapperStyle={{fontSize: '11px', fontWeight: 'bold', color: '#64748b'}}/>
-                              <Bar dataKey="Inbound" fill="url(#colorIn)" radius={[4, 4, 0, 0]} maxBarSize={20} />
-                              <Bar dataKey="Outbound" fill="url(#colorOut)" radius={[4, 4, 0, 0]} maxBarSize={20} />
-                              <defs>
-                                  <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
-                                      <stop offset="5%" stopColor="#10b981" stopOpacity={1}/>
-                                      <stop offset="95%" stopColor="#34d399" stopOpacity={0.8}/>
-                                  </linearGradient>
-                                  <linearGradient id="colorOut" x1="0" y1="0" x2="0" y2="1">
-                                      <stop offset="5%" stopColor="#f43f5e" stopOpacity={1}/>
-                                      <stop offset="95%" stopColor="#fb7185" stopOpacity={0.8}/>
-                                  </linearGradient>
-                              </defs>
+                          <BarChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
+                              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b', fontWeight: 600}} dy={10}/>
+                              <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}}/>
+                              <RechartsTooltip content={<CustomTooltip />} />
+                              <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: '12px', fontWeight: 'bold' }}/>
+                              <Bar dataKey="รับเข้า" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                              <Bar dataKey="จ่ายออก" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={40} />
                           </BarChart>
                       </ResponsiveContainer>
-                  </div>
-              </div>
-
-              {/* Donut Chart */}
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 relative">
-                  <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-2 flex items-center gap-2">
-                      <PieIcon size={16} className="text-cyan-500"/> Value by Category
-                  </h2>
-                  <div className="flex-1 h-64 relative">
-                      {categoryData.length > 0 ? (
-                          <ResponsiveContainer width="100%" height="100%">
-                              <PieChart>
-                                  <Pie data={categoryData} cx="50%" cy="50%" innerRadius={65} outerRadius={85} paddingAngle={5} dataKey="value" stroke="none">
-                                      {categoryData.map((entry, index) => (
-                                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                      ))}
-                                  </Pie>
-                                  <Tooltip formatter={(value: any) => `฿${Number(value || 0).toLocaleString()}`} contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'}}/>
-                              </PieChart>
-                          </ResponsiveContainer>
-                      ) : (
-                          <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-400 font-bold">No Data</div>
-                      )}
-                      
-                      {categoryData.length > 0 && (
-                          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-4">
-                              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Top Cat</span>
-                              <span className="text-sm font-black text-slate-700 truncate w-28 text-center">{categoryData[0]?.name}</span>
-                          </div>
-                      )}
-                  </div>
+                  )}
               </div>
           </div>
 
-          {/* --- INTERACTIVE DATA LISTS --- */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pb-6">
-              
-              {/* Critical Low Stock */}
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col">
-                  <div className="p-5 border-b border-slate-100 flex justify-between items-center">
-                      <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                          <AlertTriangle size={16} className="text-orange-500"/> Action Required (Low Stock)
-                      </h2>
-                      <Link href="/warehouse" className="text-xs font-bold text-cyan-600 hover:text-cyan-700 hover:underline flex items-center gap-1">
-                          จัดการสต๊อก <ArrowRight size={12}/>
-                      </Link>
-                  </div>
-                  <div className="p-2 flex-1 overflow-auto">
-                      {lowStockItems.length === 0 ? (
-                          <div className="text-center py-10 text-slate-400 flex flex-col items-center">
-                              <Box size={32} className="opacity-20 mb-2"/>
-                              <p className="text-sm font-bold">All stocks are healthy.</p>
-                          </div>
-                      ) : lowStockItems.map((item, idx) => (
-                          <div key={idx} className="flex justify-between items-center p-3 m-1 hover:bg-slate-50 rounded-xl transition-colors border border-transparent hover:border-slate-200">
-                              <div className="flex items-start gap-3">
-                                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-100 to-red-50 flex items-center justify-center text-orange-600 shadow-inner">
-                                      <Package size={18}/>
-                                  </div>
-                                  <div>
-                                      <div className="font-bold text-slate-700 text-sm">{item.name}</div>
-                                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">{item.id}</div>
-                                  </div>
-                              </div>
-                              <div className="text-right">
-                                  <div className="font-black text-orange-600 text-lg">{item.stock} <span className="text-xs font-normal text-slate-500">{item.unit}</span></div>
-                                  <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Min: {item.min}</div>
-                              </div>
-                          </div>
-                      ))}
-                  </div>
-              </div>
-
-              {/* Clickable Live Feed */}
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col">
-                  <div className="p-5 border-b border-slate-100 flex justify-between items-center">
-                      <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                          <Clock size={16} className="text-cyan-500"/> Live Operations Feed
-                      </h2>
-                  </div>
-                  <div className="p-2 flex-1 overflow-auto max-h-[350px]">
-                      {recentTrans.length === 0 ? (
-                          <div className="text-center py-10 text-slate-400 text-sm font-bold">No recent activities.</div>
-                      ) : recentTrans.map((t, idx) => (
-                          <div 
-                              key={idx} 
-                              onClick={() => setSelectedTx(t)}
-                              className="flex justify-between items-center p-3 m-1 hover:bg-cyan-50 cursor-pointer rounded-xl transition-all border border-transparent hover:border-cyan-100 group"
-                          >
-                              <div className="flex items-center gap-3">
-                                  <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white shadow-md ${
-                                      t.type === 'INBOUND' || Number(t.qty) > 0 ? 'bg-gradient-to-br from-emerald-400 to-emerald-600' : 
-                                      t.type === 'OUTBOUND' || Number(t.qty) < 0 ? 'bg-gradient-to-br from-rose-400 to-rose-600' : 'bg-slate-400'
-                                  }`}>
-                                      {t.type === 'INBOUND' || Number(t.qty) > 0 ? <TrendingUp size={16}/> : <TrendingDown size={16}/>}
-                                  </div>
-                                  <div>
-                                      <div className="font-bold text-slate-700 text-sm group-hover:text-cyan-700 transition-colors">
-                                          {t.product_name}
-                                      </div>
-                                      <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate max-w-[150px]">
-                                          {t.remarks || t.id}
-                                      </div>
-                                  </div>
-                              </div>
-                              <div className="text-right">
-                                  <div className={`font-black text-sm ${Number(t.qty) > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                      {Number(t.qty) > 0 ? '+' : ''}{t.qty}
-                                  </div>
-                                  <div className="text-[10px] text-slate-400 font-bold mt-0.5">
-                                      {t.date.toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'})}
-                                  </div>
-                              </div>
-                          </div>
-                      ))}
-                  </div>
+          {/* Category Pie Chart */}
+          <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col">
+              <h2 className="text-sm md:text-base font-bold text-slate-800 mb-2 flex items-center gap-2">
+                  <Box className="text-cyan-500 w-5 h-5"/> สัดส่วนการจ่ายออกตามหมวดหมู่
+              </h2>
+              <div className="w-full flex-1 min-h-[200px]">
+                  {categoryData.length === 0 ? (
+                      <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">ไม่พบข้อมูลการจ่ายออก</div>
+                  ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                              <Pie
+                                  data={categoryData}
+                                  cx="50%" cy="50%"
+                                  innerRadius={60} outerRadius={90}
+                                  paddingAngle={5} dataKey="value"
+                              >
+                                  {categoryData.map((entry, index) => (
+                                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                  ))}
+                              </Pie>
+                              <RechartsTooltip content={<CustomTooltip />} />
+                              <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px' }}/>
+                          </PieChart>
+                      </ResponsiveContainer>
+                  )}
               </div>
           </div>
-        </>
-      )}
+      </div>
 
-      {/* --- HOLOGRAPHIC TRANSACTION MODAL --- */}
-      {selectedTx && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-              <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
-                  <div className={`p-6 relative overflow-hidden ${Number(selectedTx.qty) > 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
-                      <div className="absolute right-0 top-0 w-32 h-32 opacity-10 bg-black rounded-bl-full -mr-10 -mt-10"></div>
-                      <div className="flex justify-between items-start relative z-10">
-                          <div>
-                              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Transaction Details</div>
-                              <h3 className={`text-2xl font-black ${Number(selectedTx.qty) > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                                  {Number(selectedTx.qty) > 0 ? 'INBOUND' : 'OUTBOUND'}
-                              </h3>
-                          </div>
-                          <button onClick={() => setSelectedTx(null)} className="p-2 bg-white/50 hover:bg-white rounded-full text-slate-500 transition-colors"><X size={18}/></button>
-                      </div>
-                  </div>
-                  
-                  <div className="p-6 space-y-4">
-                      <div>
-                          <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mb-1">Product Info</label>
-                          <div className="font-bold text-slate-800">{selectedTx.product_name}</div>
-                          <div className="text-xs text-slate-500 font-mono mt-0.5">{selectedTx.product_id}</div>
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-4 border-y border-slate-100 py-4">
-                          <div>
-                              <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mb-1">Change Qty</label>
-                              <div className={`text-xl font-black ${Number(selectedTx.qty) > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                  {Number(selectedTx.qty) > 0 ? '+' : ''}{selectedTx.qty}
-                              </div>
-                          </div>
-                          <div>
-                              <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mb-1">Balance After</label>
-                              <div className="text-xl font-black text-slate-800">{selectedTx.balance}</div>
-                          </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4">
-                          <div>
-                              <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mb-1">Date & Time</label>
-                              <div className="text-sm font-bold text-slate-700">
-                                  {selectedTx.date.toLocaleDateString('th-TH')} <br/>
-                                  <span className="text-slate-500">{selectedTx.date.toLocaleTimeString('th-TH')} น.</span>
-                              </div>
-                          </div>
-                          <div>
-                              <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mb-1">Remarks / Ref</label>
-                              <div className="text-sm font-medium text-slate-600 break-words">{selectedTx.remarks || '-'}</div>
-                          </div>
-                      </div>
-                  </div>
-                  
-                  <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-center">
-                      <div className="text-[10px] text-slate-400 font-mono">TX_ID: {selectedTx.id}</div>
-                  </div>
+      {/* --- TABLES SECTION --- */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 shrink-0 pb-6">
+          
+          {/* Low Stock Table */}
+          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-rose-50/50">
+                  <h2 className="font-bold text-rose-700 flex items-center gap-2"><ShieldAlert size={18}/> ต้องสั่งซื้อด่วน (Low Stock)</h2>
+                  <Link href="/warehouse" className="text-xs font-bold text-rose-600 hover:underline">ดูทั้งหมด</Link>
+              </div>
+              <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm whitespace-nowrap">
+                      <thead className="bg-slate-50 text-slate-500 font-bold text-[10px] uppercase">
+                          <tr>
+                              <th className="p-3 pl-5">Product Info</th>
+                              <th className="p-3 text-center">Current</th>
+                              <th className="p-3 text-center">Min</th>
+                              <th className="p-3 text-right pr-5">Deficit</th>
+                          </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                          {lowStockItems.length === 0 ? (
+                              <tr><td colSpan={4} className="p-8 text-center text-slate-400 text-sm">สต๊อกปลอดภัยทุกรายการ 🎉</td></tr>
+                          ) : lowStockItems.map(item => (
+                              <tr key={item.product_id} className="hover:bg-slate-50">
+                                  <td className="p-3 pl-5">
+                                      <div className="font-bold text-slate-800 text-xs truncate max-w-[150px]">{item.product_name}</div>
+                                      <div className="text-[10px] text-slate-500 font-mono">{item.product_id}</div>
+                                  </td>
+                                  <td className="p-3 text-center font-bold text-rose-600 bg-rose-50/30">{item.current_stock}</td>
+                                  <td className="p-3 text-center text-slate-500 font-mono">{item.min_stock}</td>
+                                  <td className="p-3 text-right pr-5 text-rose-600 font-black flex justify-end items-center gap-1">
+                                      -{item.deficit} <span className="text-[10px] text-rose-400 font-normal">{item.base_uom}</span>
+                                  </td>
+                              </tr>
+                          ))}
+                      </tbody>
+                  </table>
               </div>
           </div>
-      )}
+
+          {/* Recent Transactions Table */}
+          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-indigo-50/50">
+                  <h2 className="font-bold text-indigo-700 flex items-center gap-2"><Clock size={18}/> ความเคลื่อนไหวล่าสุด</h2>
+                  <Link href="/transactions" className="text-xs font-bold text-indigo-600 hover:underline">ดูประวัติทั้งหมด</Link>
+              </div>
+              <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm whitespace-nowrap">
+                      <thead className="bg-slate-50 text-slate-500 font-bold text-[10px] uppercase">
+                          <tr>
+                              <th className="p-3 pl-5">Time</th>
+                              <th className="p-3">Type</th>
+                              <th className="p-3">Product Info</th>
+                              <th className="p-3 text-right pr-5">Qty</th>
+                          </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                          {recentTx.length === 0 ? (
+                              <tr><td colSpan={4} className="p-8 text-center text-slate-400 text-sm">ยังไม่มีความเคลื่อนไหว</td></tr>
+                          ) : recentTx.map((tx, idx) => {
+                              const isOut = tx.transaction_type === 'OUTBOUND';
+                              const isAdj = tx.transaction_type === 'ADJUST';
+                              return (
+                                  <tr key={idx} className="hover:bg-slate-50">
+                                      <td className="p-3 pl-5">
+                                          <div className="text-[10px] font-bold text-slate-600">{new Date(tx.transaction_date).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'})}</div>
+                                          <div className="text-[9px] text-slate-400">{new Date(tx.transaction_date).toLocaleDateString('th-TH', {day:'2-digit', month:'short'})}</div>
+                                      </td>
+                                      <td className="p-3">
+                                          <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${isOut ? 'bg-rose-100 text-rose-600' : isAdj ? 'bg-amber-100 text-amber-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                                              {tx.transaction_type}
+                                          </span>
+                                      </td>
+                                      <td className="p-3">
+                                          <div className="font-bold text-slate-800 text-xs truncate max-w-[120px]">{tx.product_name}</div>
+                                      </td>
+                                      <td className={`p-3 text-right pr-5 font-black ${isOut || tx.quantity_change < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                          {tx.quantity_change > 0 ? '+' : ''}{tx.quantity_change}
+                                      </td>
+                                  </tr>
+                              );
+                          })}
+                      </tbody>
+                  </table>
+              </div>
+          </div>
+
+      </div>
     </div>
   );
 }

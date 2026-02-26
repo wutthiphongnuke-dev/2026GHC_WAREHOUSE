@@ -41,12 +41,14 @@ export default function TransactionLogPage() {
           const productMap: Record<string, any> = {};
           (prodData || []).forEach(p => productMap[p.product_id] = p);
 
-          // 2. ดึง Transaction Log
+          // 2. ดึง Transaction Log (🟢 อัปเดต: ให้ดึงข้อมูลจาก Database ตามช่วงวันที่เลือกไว้เลย)
           const { data: txData, error } = await supabase
               .from('transactions_log')
               .select('*')
+              .gte('transaction_date', `${startDate}T00:00:00.000Z`) // ตั้งแต่วันที่
+              .lte('transaction_date', `${endDate}T23:59:59.999Z`)   // ถึงวันที่
               .order('transaction_date', { ascending: false })
-              .limit(2000); 
+              .limit(5000); // ขยาย Limit เผื่อไว้ให้ดึงได้สูงสุด 5,000 รายการต่อการค้นหา 1 ครั้ง
 
           if (error) throw error;
 
@@ -55,8 +57,8 @@ export default function TransactionLogPage() {
               ...tx,
               product_name: productMap[tx.product_id]?.product_name || 'Unknown Product',
               category: productMap[tx.product_id]?.category || 'Unknown',
-              base_uom: productMap[tx.product_id]?.base_uom || 'Unit', // 🟢 เตรียมหน่วยเริ่มต้น
-              default_location: productMap[tx.product_id]?.default_location || '-', // 🟢 เตรียม Location เริ่มต้น
+              base_uom: productMap[tx.product_id]?.base_uom || 'Unit', 
+              default_location: productMap[tx.product_id]?.default_location || '-', 
               qty: Number(tx.quantity_change) || 0,
               balance: Number(tx.balance_after) || 0,
               dateObj: new Date(tx.transaction_date),
@@ -71,6 +73,11 @@ export default function TransactionLogPage() {
       }
       setLoading(false);
   };
+
+  // 🟢 อัปเดต: สั่งให้โหลดข้อมูลจาก DB ใหม่ทุกครั้งที่เปลี่ยนวันที่
+  useEffect(() => {
+      fetchData();
+  }, [startDate, endDate]);
 
   // --- 🔍 DEEP SEARCH & FILTER LOGIC ---
   const filteredData = useMemo(() => {

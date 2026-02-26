@@ -457,7 +457,7 @@ const Outbound = () => {
 
         await Promise.all(promises);
 
-        alert(`✅ นำเข้าข้อมูลและตัดสต๊อกสำเร็จ จำนวน ${validOrdersToProcess.length} เอกสาร อย่างรวดเร็ว!`);
+        alert(`✅ นำเข้าข้อมูลและตัดสต๊อกสำเร็จ จำนวน ${validOrdersToProcess.length} เอกสาร `);
         setBulkOrders([]);
         fetchMasterData();
     } catch (error: any) { alert("❌ Error: " + error.message); }

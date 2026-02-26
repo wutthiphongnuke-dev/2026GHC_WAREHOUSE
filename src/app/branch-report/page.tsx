@@ -8,11 +8,10 @@ import {
 } from 'lucide-react';
 import { 
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, 
-    Legend, ResponsiveContainer, Cell, PieChart, Pie, Sector
+    Legend, ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts';
 import * as XLSX from 'xlsx';
 
-// สีสำหรับ Pie Chart
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#f43f5e', '#0ea5e9', '#8b5cf6', '#14b8a6'];
 
 export default function BranchDeliveryReport() {
@@ -27,17 +26,18 @@ export default function BranchDeliveryReport() {
   // --- Filter States ---
   const [selectedBranch, setSelectedBranch] = useState('ALL');
   const [selectedCategory, setSelectedCategory] = useState('ALL');
-  const [productSearchTerm, setProductSearchTerm] = useState(''); // 🟢 ค้นหาด้วยการพิมพ์แทน Dropdown
+  const [productSearchTerm, setProductSearchTerm] = useState(''); 
   
   const [startDate, setStartDate] = useState(() => {
-      const d = new Date(); d.setMonth(d.getMonth() - 3);
+      const d = new Date(); d.setMonth(d.getMonth() - 1); 
       return d.toISOString().split('T')[0];
   });
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split('T')[0]);
 
+  // 🟢 สั่งให้ดึงข้อมูลใหม่ทุกครั้งที่มีการเปลี่ยนวันที่
   useEffect(() => {
       fetchData();
-  }, []);
+  }, [startDate, endDate]);
 
   const fetchData = async () => {
       setLoading(true);
@@ -49,16 +49,23 @@ export default function BranchDeliveryReport() {
           setBranches(bRes.data || []);
           setProducts(pRes.data || []);
 
-          // ดึงหมวดหมู่ทั้งหมดที่ไม่ซ้ำกัน
           const cats = new Set<string>();
           (pRes.data || []).forEach(p => { if (p.category) cats.add(p.category); });
           setCategories(Array.from(cats).sort());
 
-          const { data: txData } = await supabase
+          // 🟢 แก้ไขการ Query: ให้ Database กรองวันที่ให้เลย และขยาย Limit เป็น 100,000 บรรทัด
+          const { data: txData, error: txError } = await supabase
               .from('transactions_log')
               .select('*')
               .eq('transaction_type', 'OUTBOUND')
-              .order('transaction_date', { ascending: true });
+              .gte('transaction_date', `${startDate}T00:00:00.000Z`)
+              .lte('transaction_date', `${endDate}T23:59:59.999Z`)
+              .order('transaction_date', { ascending: false }) // เรียงจากล่าสุดไปเก่า
+              .limit(100000);
+
+          if (txError) {
+              console.error("Error fetching transactions:", txError);
+          }
 
           const processedTx = (txData || []).map(tx => {
               const pInfo = (pRes.data || []).find(p => p.product_id === tx.product_id);
@@ -81,38 +88,32 @@ export default function BranchDeliveryReport() {
       setLoading(false);
   };
 
-  // ==========================================
-  // 🧠 FILTER & CALCULATE LOGIC
-  // ==========================================
+  // 🟢 กรองข้อมูลตาม สาขา, หมวดหมู่ และช่องค้นหา (วันที่ถูกกรองมาจาก DB แล้ว)
   const filteredData = useMemo(() => {
       return transactions.filter(tx => {
-          const txDate = tx.dateObj.toISOString().split('T')[0];
-          const matchDate = txDate >= startDate && txDate <= endDate;
           const matchBranch = selectedBranch === 'ALL' || tx.branch_id === selectedBranch;
           const matchCategory = selectedCategory === 'ALL' || tx.category === selectedCategory;
           
-          // 🟢 รองรับการพิมพ์ค้นหาสินค้า
           const matchProduct = productSearchTerm === '' || 
               tx.product_id.toLowerCase().includes(productSearchTerm.toLowerCase()) || 
               tx.product_name.toLowerCase().includes(productSearchTerm.toLowerCase());
 
-          return matchDate && matchBranch && matchCategory && matchProduct;
+          return matchBranch && matchCategory && matchProduct;
       });
-  }, [transactions, startDate, endDate, selectedBranch, selectedCategory, productSearchTerm]);
+  }, [transactions, selectedBranch, selectedCategory, productSearchTerm]);
 
-  // 1. กราฟแท่งรายเดือน (Monthly Trend)
-  const monthlyChartData = useMemo(() => {
-      const monthMap: Record<string, number> = {};
+  // 1. กราฟแท่งรายวัน ตาม "มูลค่า" (Daily Value Chart)
+  const dailyValueChartData = useMemo(() => {
+      const dateMap: Record<string, number> = {};
       filteredData.forEach(tx => {
-          const monthKey = tx.dateObj.toISOString().slice(0, 7); 
-          monthMap[monthKey] = (monthMap[monthKey] || 0) + tx.qty;
+          const dateKey = tx.dateObj.toISOString().split('T')[0]; 
+          dateMap[dateKey] = (dateMap[dateKey] || 0) + tx.value;
       });
-      return Object.keys(monthMap).sort().map(key => {
-          const [year, month] = key.split('-');
-          const date = new Date(Number(year), Number(month) - 1);
+      return Object.keys(dateMap).sort().map(key => {
+          const date = new Date(key);
           return {
-              name: date.toLocaleDateString('th-TH', { month: 'short', year: '2-digit' }),
-              Qty: monthMap[key]
+              name: date.toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }),
+              Value: dateMap[key]
           };
       });
   }, [filteredData]);
@@ -126,7 +127,7 @@ export default function BranchDeliveryReport() {
       return Object.keys(catMap).map(key => ({
           name: key,
           value: catMap[key]
-      })).sort((a, b) => b.value - a.value); // เรียงจากมากไปน้อย
+      })).sort((a, b) => b.value - a.value);
   }, [filteredData]);
 
   // 3. กราฟแท่งแนวนอน เปรียบเทียบสาขา (Top Branches Comparison)
@@ -141,10 +142,9 @@ export default function BranchDeliveryReport() {
               name: bInfo ? bInfo.branch_name : key,
               Qty: branchMap[key]
           };
-      }).sort((a, b) => b.Qty - a.Qty).slice(0, 5); // เอาแค่ Top 5 มาโชว์
+      }).sort((a, b) => b.Qty - a.Qty).slice(0, 5);
   }, [filteredData, branches]);
 
-  // KPI ภาพรวม
   const kpiStats = useMemo(() => {
       let totalQty = 0; let totalValue = 0;
       const branchCount = new Set();
@@ -181,7 +181,6 @@ export default function BranchDeliveryReport() {
       XLSX.writeFile(wb, `Delivery_Report_${startDate}_to_${endDate}.xlsx`);
   };
 
-  // Custom Tooltip สำหรับ Pie Chart
   const CustomTooltip = ({ active, payload }: any) => {
       if (active && payload && payload.length) {
           return (
@@ -197,7 +196,6 @@ export default function BranchDeliveryReport() {
   return (
     <div className="p-4 md:p-6 h-full bg-slate-50 flex flex-col font-sans overflow-hidden">
       
-      {/* --- HEADER --- */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4 flex-shrink-0">
           <div>
               <h1 className="text-xl md:text-2xl font-black text-slate-800 flex items-center gap-2">
@@ -211,9 +209,7 @@ export default function BranchDeliveryReport() {
           </button>
       </div>
 
-      {/* --- FILTERS PANEL (Responsive) --- */}
       <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 mb-6 flex flex-col md:flex-row flex-wrap gap-4 items-center flex-shrink-0 relative z-20">
-          
           <div className="flex w-full md:w-auto items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-100">
               <Calendar size={18} className="text-indigo-500 ml-1 shrink-0"/>
               <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-xs md:text-sm font-bold text-slate-700 outline-none cursor-pointer w-full"/>
@@ -257,7 +253,6 @@ export default function BranchDeliveryReport() {
       ) : (
           <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-6 pb-6">
               
-              {/* --- KPI SUMMARY CARDS --- */}
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-6 shrink-0">
                   <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-200 flex items-center justify-between relative overflow-hidden group">
                       <div className="absolute -right-6 -top-6 w-24 h-24 bg-blue-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
@@ -272,7 +267,7 @@ export default function BranchDeliveryReport() {
                       <div className="absolute -right-6 -top-6 w-24 h-24 bg-emerald-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
                       <div className="relative z-10">
                           <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Est. Value (มูลค่า)</div>
-                          <div className="text-xl md:text-3xl font-black text-slate-800">฿{(kpiStats.totalValue / 1000).toFixed(1)}k</div>
+                          <div className="text-xl md:text-3xl font-black text-emerald-600">฿{(kpiStats.totalValue / 1000).toFixed(1)}k</div>
                       </div>
                       <div className="w-10 h-10 md:w-12 md:h-12 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center relative z-10"><TrendingUp size={20} className="md:w-6 md:h-6"/></div>
                   </div>
@@ -287,31 +282,38 @@ export default function BranchDeliveryReport() {
                   </div>
               </div>
 
-              {/* --- CHARTS DASHBOARD (3-Way Analysis) --- */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 shrink-0">
                   
-                  {/* 1. Bar Chart (Trend) */}
+                  {/* 1. Bar Chart (Daily Value Trend) */}
                   <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 lg:col-span-2">
                       <h2 className="text-sm md:text-base font-bold text-slate-800 mb-4 flex items-center gap-2">
-                          <BarChart2 className="text-indigo-500 w-4 h-4 md:w-5 md:h-5"/> ปริมาณการจ่ายออกรายเดือน
+                          <BarChart2 className="text-emerald-500 w-4 h-4 md:w-5 md:h-5"/> มูลค่าการจ่ายออกรายวัน (บาท)
                       </h2>
                       <div className="w-full h-64 md:h-72">
-                          {monthlyChartData.length === 0 ? (
-                              <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">ไม่พบข้อมูล</div>
+                          {dailyValueChartData.length === 0 ? (
+                              <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">ไม่พบข้อมูลตามช่วงวันที่เลือก</div>
                           ) : (
                               <ResponsiveContainer width="100%" height="100%">
-                                  <BarChart data={monthlyChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                  <BarChart data={dailyValueChartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
                                       <defs>
-                                          <linearGradient id="colorQty" x1="0" y1="0" x2="0" y2="1">
-                                              <stop offset="5%" stopColor="#6366f1" stopOpacity={1}/>
-                                              <stop offset="95%" stopColor="#818cf8" stopOpacity={0.6}/>
+                                          <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                                              <stop offset="5%" stopColor="#10b981" stopOpacity={1}/>
+                                              <stop offset="95%" stopColor="#34d399" stopOpacity={0.5}/>
                                           </linearGradient>
                                       </defs>
                                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
                                       <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b', fontWeight: 600}} dy={10}/>
-                                      <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}}/>
-                                      <RechartsTooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1)'}}/>
-                                      <Bar dataKey="Qty" name="ยอดจ่ายออก" fill="url(#colorQty)" radius={[4, 4, 0, 0]} maxBarSize={50} />
+                                      <YAxis 
+                                          axisLine={false} tickLine={false} 
+                                          tick={{fontSize: 10, fill: '#64748b'}}
+                                          tickFormatter={(val) => `฿${(val/1000).toFixed(0)}k`} 
+                                      />
+                                      <RechartsTooltip 
+                                          cursor={{fill: '#f8fafc'}} 
+                                          contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1)'}}
+                                          formatter={(value: any) => [`${Number(value).toLocaleString()} ฿`, 'มูลค่าจ่ายออก']}
+                                      />
+                                      <Bar dataKey="Value" name="มูลค่าจ่ายออก (บาท)" fill="url(#colorValue)" radius={[4, 4, 0, 0]} maxBarSize={50} />
                                   </BarChart>
                               </ResponsiveContainer>
                           )}
@@ -337,7 +339,7 @@ export default function BranchDeliveryReport() {
                                       >
                                           {categoryChartData.map((entry, index) => (
                                               <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                          ))}
+                                      ))}
                                       </Pie>
                                       <RechartsTooltip content={<CustomTooltip />} />
                                       <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px' }}/>
@@ -351,7 +353,7 @@ export default function BranchDeliveryReport() {
                   {selectedBranch === 'ALL' && (
                       <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 lg:col-span-3">
                           <h2 className="text-sm md:text-base font-bold text-slate-800 mb-4 flex items-center gap-2">
-                              <Target className="text-emerald-500 w-4 h-4 md:w-5 md:h-5"/> เปรียบเทียบ Top 5 สาขาที่เบิกสูงสุด
+                              <Target className="text-indigo-500 w-4 h-4 md:w-5 md:h-5"/> เปรียบเทียบ Top 5 สาขาที่เบิกสูงสุด (หน่วย)
                           </h2>
                           <div className="w-full h-64 md:h-80">
                               {branchComparisonData.length === 0 ? (
@@ -363,7 +365,7 @@ export default function BranchDeliveryReport() {
                                           <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}}/>
                                           <YAxis type="category" dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#334155', fontWeight: 600}} width={120}/>
                                           <RechartsTooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'}}/>
-                                          <Bar dataKey="Qty" name="ยอดเบิก (หน่วย)" fill="#10b981" radius={[0, 4, 4, 0]} barSize={24}>
+                                          <Bar dataKey="Qty" name="ยอดเบิก (หน่วย)" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={24}>
                                               {branchComparisonData.map((entry, index) => (
                                                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                                               ))}
@@ -391,11 +393,11 @@ export default function BranchDeliveryReport() {
                                   <th className="p-3 md:p-4">Product Info</th>
                                   <th className="p-3 md:p-4 text-center">Category</th>
                                   <th className="p-3 md:p-4 text-right">Qty Sent</th>
-                                  <th className="p-3 md:p-4">Ref / Doc No.</th>
+                                  <th className="p-3 md:p-4 text-right pr-4 md:pr-6">Value</th>
                               </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                              {filteredData.slice().reverse().slice(0, 50).map((tx, idx) => {
+                              {filteredData.slice(0, 100).map((tx, idx) => {
                                   const bInfo = branches.find(b => b.branch_id === tx.branch_id);
 
                                   return (
@@ -418,14 +420,14 @@ export default function BranchDeliveryReport() {
                                           <td className="p-3 md:p-4 text-right">
                                               <span className="font-black text-base md:text-lg text-indigo-600">{tx.qty.toLocaleString()}</span>
                                           </td>
-                                          <td className="p-3 md:p-4 text-[10px] md:text-xs text-slate-500 font-mono">
-                                              {tx.reference_id || tx.transaction_id.split('-')[0]}
+                                          <td className="p-3 md:p-4 text-right pr-4 md:pr-6 font-bold text-emerald-600">
+                                              ฿{tx.value.toLocaleString()}
                                           </td>
                                       </tr>
                                   );
                               })}
-                              {filteredData.length > 50 && (
-                                  <tr><td colSpan={6} className="p-4 text-center text-xs font-bold text-slate-400 bg-slate-50">Showing top 50 recent records. Export to Excel to view all.</td></tr>
+                              {filteredData.length > 100 && (
+                                  <tr><td colSpan={6} className="p-4 text-center text-xs font-bold text-slate-400 bg-slate-50">Showing top 100 records. Export to Excel to view all.</td></tr>
                               )}
                           </tbody>
                       </table>
