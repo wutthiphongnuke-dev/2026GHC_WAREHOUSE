@@ -32,13 +32,24 @@ export default function CycleCountPage() {
   const fetchInitialData = async () => {
       setLoading(true);
       try {
-          // 1. ดึง Master Products ทั้งหมดเก็บไว้ (แก้ปัญหา Join ข้อมูลไม่ติด)
+          // 1. ดึง Master Products ทั้งหมดเก็บไว้
           const { data: pData } = await supabase.from('master_products').select('*').eq('status', 'ACTIVE');
-          setMasterProducts(pData || []);
+          const products = pData || [];
+          setMasterProducts(products);
 
-          // 2. ดึง Location ที่มีอยู่
-          const { data: iData } = await supabase.from('inventory_lots').select('storage_location').gt('quantity', 0);
-          const uniqueLocs = Array.from(new Set((iData || []).map(d => d.storage_location).filter(Boolean))).sort();
+          // 2. ดึง Location ที่มีสต๊อกอยู่จริง
+          const { data: iData } = await supabase.from('inventory_lots').select('storage_location');
+          
+          // 3. 🟢 รวม Location จาก 2 แหล่ง (Default Location + Location ที่มีของจริง)
+          const allLocs = new Set<string>();
+          products.forEach(p => {
+              if (p.default_location) allLocs.add(p.default_location);
+          });
+          (iData || []).forEach(lot => {
+              if (lot.storage_location) allLocs.add(lot.storage_location);
+          });
+
+          const uniqueLocs = Array.from(allLocs).sort();
           setLocations(uniqueLocs as string[]);
       } catch (error) {
           console.error(error);
@@ -46,11 +57,15 @@ export default function CycleCountPage() {
       setLoading(false);
   };
 
-  // 🚀 เริ่มสร้างงานนับ (Group by Product ID ให้เสถียรขึ้น)
+  // 🚀 เริ่มสร้างงานนับ (🟢 ดึงจาก Default Location + ของที่มีจริง)
   const generateCountTask = async () => {
       if (!selectedLocation) return alert("กรุณาเลือก Location ที่ต้องการตรวจนับ");
       setLoading(true);
       try {
+          // 1. หาว่ามีสินค้าอะไรบ้างที่ "ควรจะอยู่" ที่นี่ (จาก Default Location)
+          const expectedProducts = masterProducts.filter(p => p.default_location === selectedLocation);
+
+          // 2. หาว่ามีสต๊อกอะไรบ้างที่ "มีอยู่จริง" ในระบบ ณ Location นี้
           const { data: lots } = await supabase.from('inventory_lots').select('*').eq('storage_location', selectedLocation);
           
           // รวมยอดสต๊อกที่อาจมีหลาย Lot ใน Location เดียวกัน
@@ -59,20 +74,38 @@ export default function CycleCountPage() {
               aggregated[lot.product_id] = (aggregated[lot.product_id] || 0) + Number(lot.quantity);
           });
 
-          const itemsToCount = Object.keys(aggregated).map(pid => {
-              const pInfo = masterProducts.find(p => p.product_id === pid);
-              return {
-                  product_id: pid,
-                  product_name: pInfo?.product_name || 'Unknown Item',
-                  unit: pInfo?.base_uom || 'Unit',
-                  cost: Number(pInfo?.standard_cost) || 0,
-                  system_qty: aggregated[pid],
-                  location: selectedLocation,
-                  isExtra: false // เอาไว้เช็คว่าเป็นของที่เพิ่งแอดเข้ามาใหม่ไหม
-              };
-          }).filter(item => item.system_qty > 0); // เอาเฉพาะที่ระบบมีของ
+          const itemsMap: Record<string, any> = {};
 
-          setCountItems(itemsToCount);
+          // 3. 🟢 ใส่ของที่ "ควรจะมี" ก่อน (ถึงสต๊อกระบบจะเป็น 0 ก็จะโชว์ให้เห็นว่ามีไอเทมนี้)
+          expectedProducts.forEach(p => {
+              itemsMap[p.product_id] = {
+                  product_id: p.product_id,
+                  product_name: p.product_name,
+                  unit: p.base_uom || 'Unit',
+                  cost: Number(p.standard_cost) || 0,
+                  system_qty: aggregated[p.product_id] || 0, // ถ้าไม่มีของจริงจะเป็น 0
+                  location: selectedLocation,
+                  isExtra: false // ของตรง Location
+              };
+          });
+
+          // 4. 🟢 ตรวจสอบของที่ "หลงเข้ามา" (มีสต๊อกจริง แต่ไม่ใช่ Default Location)
+          (lots || []).forEach(lot => {
+              if (!itemsMap[lot.product_id]) {
+                  const pInfo = masterProducts.find(p => p.product_id === lot.product_id);
+                  itemsMap[lot.product_id] = {
+                      product_id: lot.product_id,
+                      product_name: pInfo?.product_name || 'Unknown Item',
+                      unit: pInfo?.base_uom || 'Unit',
+                      cost: Number(pInfo?.standard_cost) || 0,
+                      system_qty: aggregated[lot.product_id],
+                      location: selectedLocation,
+                      isExtra: true // ติดป้ายว่าเป็นของหลงเข้าโซน
+                  };
+              }
+          });
+
+          setCountItems(Object.values(itemsMap));
           setActualCounts({}); 
           setCountSearchTerm('');
           setStep(2); 
@@ -150,7 +183,7 @@ export default function CycleCountPage() {
                       last_updated: new Date().toISOString()
                   }).eq(targetLot.lot_id ? 'lot_id' : 'id', targetLot.lot_id || targetLot.id);
               } else {
-                  // ถ้าไม่เคยมี Lot ใน Location นี้เลย (เช่นของหลงมา) ให้สร้างใหม่
+                  // ถ้าไม่เคยมี Lot ใน Location นี้เลย ให้สร้างใหม่
                   await supabase.from('inventory_lots').insert([{
                       product_id: item.product_id,
                       storage_location: item.location,
@@ -268,7 +301,7 @@ export default function CycleCountPage() {
           )}
 
           {/* ========================================== */}
-          {/* STEP 2: BLIND COUNT (UI ใช้งานง่ายขึ้น) */}
+          {/* STEP 2: BLIND COUNT */}
           {/* ========================================== */}
           {step === 2 && (
               <div className="flex flex-col h-full animate-fade-in">
@@ -295,7 +328,7 @@ export default function CycleCountPage() {
                               <div key={item.product_id} className={`bg-white p-5 rounded-2xl shadow-sm border focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100 transition-all ${item.isExtra ? 'border-amber-300 bg-amber-50/10' : 'border-slate-200'}`}>
                                   <div className="flex justify-between items-start mb-4">
                                       <span className="text-[10px] font-mono font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded">#{idx+1}</span>
-                                      {item.isExtra && <span className="text-[9px] font-bold bg-amber-100 text-amber-700 px-2 py-1 rounded uppercase flex items-center gap-1"><AlertTriangle size={10}/> นอกระบบ</span>}
+                                      {item.isExtra && <span className="text-[9px] font-bold bg-amber-100 text-amber-700 px-2 py-1 rounded uppercase flex items-center gap-1"><AlertTriangle size={10}/> ของหลงเข้าโซน</span>}
                                   </div>
                                   <div className="font-bold text-slate-800 text-lg leading-tight mb-1 truncate" title={item.product_name}>{item.product_name}</div>
                                   <div className="text-xs text-slate-500 font-mono mb-4">{item.product_id}</div>
@@ -367,7 +400,7 @@ export default function CycleCountPage() {
                                               <div className="font-bold text-slate-800">{item.product_name}</div>
                                               <div className="text-[10px] text-slate-500 font-mono mt-0.5 flex items-center gap-2">
                                                   {item.product_id}
-                                                  {item.isExtra && <span className="bg-amber-100 text-amber-700 px-1 rounded font-bold">ของหลงเข้าโซน</span>}
+                                                  {item.isExtra && <span className="bg-amber-100 text-amber-700 px-1 rounded font-bold">ของหลงโซน (ไม่ใช่ Default)</span>}
                                               </div>
                                           </td>
                                           <td className="p-4 text-center font-mono text-slate-500 bg-slate-50/50">
