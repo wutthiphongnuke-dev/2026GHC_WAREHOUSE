@@ -31,7 +31,33 @@ interface ParsedOrder {
   delivery_date: string;
   items: ParsedItem[];
   isDuplicate?: boolean; 
+  source_file?: string; // เก็บชื่อไฟล์อ้างอิง
 }
+
+// 🟢 ฟังก์ชันดึงวันที่จากชื่อไฟล์ (รองรับหลาย Format)
+const extractDateFromFilename = (filename: string): string | null => {
+    // 1. Format: YYYY-MM-DD หรือ YYYY_MM_DD
+    let match = filename.match(/(\d{4})[-_.](\d{2})[-_.](\d{2})/);
+    if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+
+    // 2. Format: DD-MM-YYYY หรือ DD_MM_YYYY
+    match = filename.match(/(\d{2})[-_.](\d{2})[-_.](\d{4})/);
+    if (match) return `${match[3]}-${match[2]}-${match[1]}`;
+
+    // 3. Format: YYYYMMDD (เลขติดกัน)
+    match = filename.match(/(\d{4})(\d{2})(\d{2})/);
+    if (match && parseInt(match[2]) <= 12 && parseInt(match[3]) <= 31 && parseInt(match[1]) > 2000) {
+        return `${match[1]}-${match[2]}-${match[3]}`;
+    }
+
+    // 4. Format: DDMMYYYY (เลขติดกัน)
+    match = filename.match(/(\d{2})(\d{2})(\d{4})/);
+    if (match && parseInt(match[2]) <= 12 && parseInt(match[1]) <= 31 && parseInt(match[3]) > 2000) {
+        return `${match[3]}-${match[2]}-${match[1]}`;
+    }
+
+    return null; // ถ้าไม่เจอรูปแบบวันที่ในชื่อไฟล์
+};
 
 const Outbound = () => {
   const [activeTab, setActiveTab] = useState<string>('scan'); 
@@ -99,7 +125,7 @@ const Outbound = () => {
       setShowBranchDropdown(false);
   };
 
-  // 1. SCAN LOGIC (ตัดทีละบิล)
+  // 1. SCAN LOGIC
   const processBarcode = (barcode: string) => {
       const stockItem = inventory.find(i => i.product_id.toLowerCase() === barcode.toLowerCase());
       if (!stockItem) return alert(`❌ ไม่พบรหัสสินค้า [${barcode}] ในระบบ`);
@@ -170,7 +196,6 @@ const Outbound = () => {
             delivery_date: new Date().toISOString().split('T')[0]
         }]);
 
-        // ตัดสต๊อกแบบเดิม (เพราะสแกนทีละบิล ทำแบบเดิมได้)
         const linesToInsert = [];
         for (const item of cart) {
             const qtyToDeduct = parseInt(item.qtyPicked);
@@ -216,87 +241,124 @@ const Outbound = () => {
     setLoading(false);
   };
 
-  // 2. BULK IMPORT EXCEL LOGIC
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // 2. 🟢 BULK IMPORT EXCEL LOGIC (รองรับหลายไฟล์ & ดึงวันที่จากชื่อไฟล์)
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
     setLoading(true);
-    const reader = new FileReader();
-    reader.onload = async (evt: any) => {
-        try {
-            const data = new Uint8Array(evt.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
-            const rows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "" });
+    try {
+        const allParsedOrders: Record<string, ParsedOrder> = {};
 
-            const parsedOrders: Record<string, ParsedOrder> = {};
-            let currentHeader: ParsedOrder | null = null;
-
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
-                if (!row || row.length === 0) continue;
-
-                const col0 = String(row[0]).trim();
-
-                if (col0.startsWith("TO-")) {
-                    let dDate = String(row[4]).trim();
-                    if (dDate.includes('/')) {
-                        const [d, m, y] = dDate.split('/');
-                        dDate = `${y}-${m}-${d}`;
-                    }
-                    currentHeader = {
-                        to_number: col0, to_warehouse: String(row[1]).trim(), ref_document: String(row[3]).trim(), delivery_date: dDate, items: [], isDuplicate: false
-                    };
-                    parsedOrders[col0] = currentHeader;
-                    continue;
-                }
-
-                if (currentHeader && col0 && !col0.startsWith("TO-") && !col0.includes("Total") && String(row[3]) !== "Total") {
-                    const qty = parseFloat(row[2]) || 0;
-                    if (qty > 0) {
-                        const stockItem = inventory.find(inv => inv.product_id === col0);
-                        const currentStock = stockItem ? stockItem.current_qty : 0;
-                        
-                        currentHeader.items.push({
-                            rm_code: col0, description: String(row[1]).trim(), qty: qty, unit: String(row[3]).trim(), unit_cost: parseFloat(row[4]) || 0, cost_amt: parseFloat(row[6]) || 0, inStock: currentStock, hasError: currentStock < qty 
-                        });
-                    }
-                }
-            }
-
-            const toNumbers = Object.keys(parsedOrders);
-            if (toNumbers.length > 0) {
-                const { data: existByToNumber } = await supabase.from('outbound_orders').select('to_number').in('to_number', toNumbers);
-                const { data: existByRef } = await supabase.from('outbound_orders').select('ref_document').in('ref_document', toNumbers);
+        // ลูปอ่านทีละไฟล์แบบคู่ขนาน
+        const readFilePromises = Array.from(files).map(file => {
+            return new Promise<void>((resolve, reject) => {
                 
-                const duplicateSet = new Set([ ...(existByToNumber?.map(d => d.to_number) || []), ...(existByRef?.map(d => d.ref_document) || []) ]);
-                Object.values(parsedOrders).forEach(order => { if (duplicateSet.has(order.to_number)) order.isDuplicate = true; });
-            }
+                // 🟢 สกัดวันที่จากชื่อไฟล์ (ถ้ามี)
+                const dateFromFilename = extractDateFromFilename(file.name);
 
-            const globalReq: Record<string, number> = {};
-            Object.values(parsedOrders).filter(o => !o.isDuplicate).forEach(o => o.items.forEach(i => globalReq[i.rm_code] = (globalReq[i.rm_code] || 0) + i.qty));
-            
-            Object.values(parsedOrders).filter(o => !o.isDuplicate).forEach(o => {
-                o.items.forEach(i => {
-                    const stockItem = inventory.find(inv => inv.product_id === i.rm_code);
-                    if (!stockItem || stockItem.current_qty < globalReq[i.rm_code]) i.hasError = true;
-                });
+                const reader = new FileReader();
+                reader.onload = (evt: any) => {
+                    try {
+                        const data = new Uint8Array(evt.target.result);
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        const rows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "" });
+
+                        let currentHeader: ParsedOrder | null = null;
+
+                        for (let i = 0; i < rows.length; i++) {
+                            const row = rows[i];
+                            if (!row || row.length === 0) continue;
+
+                            const col0 = String(row[0]).trim();
+
+                            // ถ้าพบบรรทัดหัวบิล
+                            if (col0.startsWith("TO-")) {
+                                // 🟢 ใช้วันที่จากชื่อไฟล์เป็นหลัก ถ้าหาไม่เจอค่อยใช้วันที่ใน Excel
+                                let dDate = dateFromFilename;
+                                if (!dDate) {
+                                    dDate = String(row[4]).trim();
+                                    if (dDate.includes('/')) {
+                                        const [d, m, y] = dDate.split('/');
+                                        dDate = `${y}-${m}-${d}`;
+                                    }
+                                }
+
+                                currentHeader = {
+                                    to_number: col0, 
+                                    to_warehouse: String(row[1]).trim(), 
+                                    ref_document: String(row[3]).trim(), 
+                                    delivery_date: dDate || new Date().toISOString().split('T')[0], 
+                                    items: [], 
+                                    isDuplicate: false,
+                                    source_file: file.name
+                                };
+                                
+                                if(!allParsedOrders[col0]) {
+                                    allParsedOrders[col0] = currentHeader;
+                                }
+                                continue;
+                            }
+
+                            // ถ้าพบบรรทัดรายการสินค้า
+                            if (currentHeader && col0 && !col0.startsWith("TO-") && !col0.includes("Total") && String(row[3]) !== "Total") {
+                                const qty = parseFloat(row[2]) || 0;
+                                if (qty > 0) {
+                                    const stockItem = inventory.find(inv => inv.product_id === col0);
+                                    const currentStock = stockItem ? stockItem.current_qty : 0;
+                                    
+                                    const targetOrder = allParsedOrders[currentHeader.to_number];
+                                    if(targetOrder) {
+                                        targetOrder.items.push({
+                                            rm_code: col0, description: String(row[1]).trim(), qty: qty, unit: String(row[3]).trim(), unit_cost: parseFloat(row[4]) || 0, cost_amt: parseFloat(row[6]) || 0, inStock: currentStock, hasError: currentStock < qty 
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        resolve();
+                    } catch (err) {
+                        reject(err);
+                    }
+                };
+                reader.readAsArrayBuffer(file);
             });
+        });
 
-            setBulkOrders(Object.values(parsedOrders));
-            setExpandedOrder(Object.values(parsedOrders)[0]?.to_number || null);
+        // รอจนกว่าจะอ่านไฟล์ครบทุกไฟล์
+        await Promise.all(readFilePromises);
 
-        } catch (error: any) { alert("เกิดข้อผิดพลาดในการอ่านไฟล์: " + error.message); }
-        setLoading(false);
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = '';
+        const toNumbers = Object.keys(allParsedOrders);
+        if (toNumbers.length > 0) {
+            const { data: existByToNumber } = await supabase.from('outbound_orders').select('to_number').in('to_number', toNumbers);
+            const { data: existByRef } = await supabase.from('outbound_orders').select('ref_document').in('ref_document', toNumbers);
+            
+            const duplicateSet = new Set([ ...(existByToNumber?.map(d => d.to_number) || []), ...(existByRef?.map(d => d.ref_document) || []) ]);
+            Object.values(allParsedOrders).forEach(order => { if (duplicateSet.has(order.to_number)) order.isDuplicate = true; });
+        }
+
+        const globalReq: Record<string, number> = {};
+        Object.values(allParsedOrders).filter(o => !o.isDuplicate).forEach(o => o.items.forEach(i => globalReq[i.rm_code] = (globalReq[i.rm_code] || 0) + i.qty));
+        
+        Object.values(allParsedOrders).filter(o => !o.isDuplicate).forEach(o => {
+            o.items.forEach(i => {
+                const stockItem = inventory.find(inv => inv.product_id === i.rm_code);
+                if (!stockItem || stockItem.current_qty < globalReq[i.rm_code]) i.hasError = true;
+            });
+        });
+
+        setBulkOrders(Object.values(allParsedOrders));
+        setExpandedOrder(Object.values(allParsedOrders)[0]?.to_number || null);
+
+    } catch (error: any) { alert("เกิดข้อผิดพลาดในการอ่านไฟล์: " + error.message); }
+    setLoading(false);
+    e.target.value = ''; // Reset เผื่อกดอัปโหลดไฟล์เดิมซ้ำ
   };
 
   const validOrdersToProcess = bulkOrders.filter(o => !o.isDuplicate);
   const needsForceIssue = validOrdersToProcess.some(o => o.items.some(i => i.hasError));
 
-  // 🚀 ฟังก์ชันสุดยอดความเร็ว Bulk Processing (ทำ FIFO และหักลบใน Memory ก่อนยัดลง DB ตู้มเดียว)
+  // 🚀 ฟังก์ชันสุดยอดความเร็ว Bulk Processing
   const handleSubmitBulk = async () => {
     if (validOrdersToProcess.length === 0) return alert("ไม่มีเอกสารใหม่ให้บันทึก (เป็นเอกสารซ้ำทั้งหมด)");
     
@@ -312,34 +374,29 @@ const Outbound = () => {
 
     setLoading(true);
     try {
-        // 1. ดึงข้อมูลสินค้าที่ต้องใช้ทั้งหมดมารอไว้ใน Memory ก่อน
         const requiredProducts = [...new Set(validOrdersToProcess.flatMap(o => o.items.map(i => i.rm_code)))];
         
         const { data: allLots } = await supabase.from('inventory_lots')
             .select('*').in('product_id', requiredProducts).gt('quantity', 0)
             .order('mfg_date', { ascending: true, nullsFirst: false });
 
-        // จัดกลุ่ม Lot ตามสินค้า เพื่อง่ายต่อการคำนวณ FIFO ใน Memory
         const lotsByProduct: Record<string, any[]> = {};
         requiredProducts.forEach(id => lotsByProduct[id] = []);
         (allLots || []).forEach(lot => {
-            lotsByProduct[lot.product_id].push({...lot}); // Clone object
+            lotsByProduct[lot.product_id].push({...lot}); 
         });
 
-        // จำลอง Balance รวมใน Memory
         const balanceByProduct: Record<string, number> = {};
         requiredProducts.forEach(id => {
             balanceByProduct[id] = lotsByProduct[id].reduce((sum, l) => sum + Number(l.quantity), 0);
         });
 
-        // 2. เตรียม Array สำหรับเก็บคำสั่งยิงเข้า Database รวดเดียว (Bulk Insert/Upsert)
         const ordersToInsert: any[] = [];
         const linesToInsert: any[] = [];
         const logsToInsert: any[] = [];
         const newLotsToInsert: any[] = [];
-        const lotsMapToUpsert = new Map<string, any>(); // เก็บ Lot ที่โดนตัดสต๊อก
+        const lotsMapToUpsert = new Map<string, any>(); 
 
-        // 3. เริ่มลูปจำลองตัดสต๊อกใน Memory (ทำงานเสร็จในพริบตาเดียว)
         for (const order of validOrdersToProcess) {
             const rawBranch = order.to_warehouse ? String(order.to_warehouse).trim() : '';
             const matchedBranch = branches.find(b => rawBranch === b.branch_id || rawBranch === b.branch_name || rawBranch.includes(b.branch_id) || rawBranch.includes(b.branch_name));
@@ -356,7 +413,6 @@ const Outbound = () => {
                     qty: item.qty, unit: item.unit, unit_cost: item.unit_cost, cost_amt: item.cost_amt
                 });
 
-                // --- IN-MEMORY FIFO DEDUCTION ---
                 let remaining = item.qty;
                 const productLots = lotsByProduct[item.rm_code];
 
@@ -368,18 +424,12 @@ const Outbound = () => {
                     lot.quantity -= deductAmt;
                     remaining -= deductAmt;
 
-                    // บันทึกว่า Lot นี้ถูกหักลบไปเท่าไหร่ (เพื่อรอ Upsert)
                     lotsMapToUpsert.set(lot.lot_id, {
-                        lot_id: lot.lot_id,
-                        product_id: lot.product_id,
-                        storage_location: lot.storage_location,
-                        quantity: lot.quantity,
-                        mfg_date: lot.mfg_date,
-                        exp_date: lot.exp_date
+                        lot_id: lot.lot_id, product_id: lot.product_id, storage_location: lot.storage_location,
+                        quantity: lot.quantity, mfg_date: lot.mfg_date, exp_date: lot.exp_date
                     });
                 }
 
-                // ถ้าสต๊อกไม่พอ (ต้องบังคับตัดติดลบ)
                 if (remaining > 0) {
                     newLotsToInsert.push({ product_id: item.rm_code, quantity: -remaining, storage_location: 'PENDING_RCV' });
                 }
@@ -396,7 +446,6 @@ const Outbound = () => {
             }
         }
 
-        // 4. โยนข้อมูลที่คำนวณเสร็จแล้วเข้า Database แบบขนาน (Promise.all)
         const promises = [];
         if (ordersToInsert.length > 0) promises.push(supabase.from('outbound_orders').insert(ordersToInsert));
         if (linesToInsert.length > 0) promises.push(supabase.from('outbound_lines').insert(linesToInsert));
@@ -560,9 +609,10 @@ const Outbound = () => {
                     <div className="bg-white p-6 md:p-8 rounded-xl border-2 border-dashed border-red-300 text-center mb-6 shadow-sm">
                         <label className="cursor-pointer block">
                             <UploadCloud size={48} className="mx-auto text-red-400 mb-2"/>
-                            <span className="text-lg font-bold text-slate-700">อัปโหลดรายงานการเบิก (Excel)</span>
-                            <p className="text-xs text-slate-400 mt-2">รูปแบบ: TO No., To Warehouse, Rm Code, Qty...</p>
-                            <input type="file" accept=".xlsx, .csv" className="hidden" onChange={handleFileUpload} disabled={loading}/>
+                            <span className="text-lg font-bold text-slate-700">อัปโหลดรายงานการเบิก (ลากวางได้หลายไฟล์)</span>
+                            <p className="text-xs text-slate-400 mt-2">รูปแบบวันที่รองรับในชื่อไฟล์: YYYY-MM-DD, DD-MM-YYYY</p>
+                            {/* 🟢 เพิ่ม multiple ให้เลือกได้หลายไฟล์ */}
+                            <input type="file" accept=".xlsx, .csv" multiple className="hidden" onChange={handleFileUpload} disabled={loading}/>
                         </label>
                     </div>
 
@@ -599,7 +649,9 @@ const Outbound = () => {
                                                 <div className="font-bold text-slate-700">{order.items.length} รายการ</div>
                                                 {order.isDuplicate 
                                                     ? <div className="text-[10px] text-red-500 font-bold bg-white px-2 py-0.5 rounded border border-red-200 ml-2 md:ml-0 md:mt-1">ข้ามอัตโนมัติ</div>
-                                                    : <div className="text-xs text-slate-400 ml-2 md:ml-0 md:mt-1">Ref: {order.ref_document} | Date: {order.delivery_date}</div>
+                                                    : <div className="text-xs text-slate-400 ml-2 md:ml-0 md:mt-1">
+                                                        Date: {order.delivery_date} {order.source_file && `(จากไฟล์: ${order.source_file})`}
+                                                      </div>
                                                 }
                                             </div>
                                         </div>
