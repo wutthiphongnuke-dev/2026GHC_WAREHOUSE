@@ -36,8 +36,8 @@ export default function TransactionLogPage() {
   const fetchData = async () => {
       setLoading(true);
       try {
-          // 1. ดึง Master Products เพื่อเอามา Map ชื่อสินค้า
-          const { data: prodData } = await supabase.from('master_products').select('product_id, product_name, category');
+          // 1. ดึง Master Products เพื่อเอามา Map ข้อมูลพื้นฐาน
+          const { data: prodData } = await supabase.from('master_products').select('product_id, product_name, category, base_uom, default_location');
           const productMap: Record<string, any> = {};
           (prodData || []).forEach(p => productMap[p.product_id] = p);
 
@@ -55,10 +55,12 @@ export default function TransactionLogPage() {
               ...tx,
               product_name: productMap[tx.product_id]?.product_name || 'Unknown Product',
               category: productMap[tx.product_id]?.category || 'Unknown',
+              base_uom: productMap[tx.product_id]?.base_uom || 'Unit', // 🟢 เตรียมหน่วยเริ่มต้น
+              default_location: productMap[tx.product_id]?.default_location || '-', // 🟢 เตรียม Location เริ่มต้น
               qty: Number(tx.quantity_change) || 0,
               balance: Number(tx.balance_after) || 0,
               dateObj: new Date(tx.transaction_date),
-              metadata: tx.metadata || {} // 🟢 เผื่อไว้ดึงข้อมูลอุณหภูมิและสถานะ
+              metadata: tx.metadata || {} 
           }));
 
           setTransactions(formattedData);
@@ -78,14 +80,16 @@ export default function TransactionLogPage() {
           if (endDate && txDate > endDate) return false;
           if (typeFilter !== 'ALL' && tx.transaction_type !== typeFilter) return false;
 
+          // 🟢 รองรับการค้นหาตามเลขเอกสาร PO, TO (ค้นหาจาก remarks และ metadata)
           if (searchTerm) {
               const lowerSearch = searchTerm.toLowerCase();
               const matchId = (tx.transaction_id || '').toLowerCase().includes(lowerSearch);
               const matchProductId = (tx.product_id || '').toLowerCase().includes(lowerSearch);
               const matchProductName = (tx.product_name || '').toLowerCase().includes(lowerSearch);
               const matchRemarks = (tx.remarks || '').toLowerCase().includes(lowerSearch);
+              const matchMetadata = JSON.stringify(tx.metadata || {}).toLowerCase().includes(lowerSearch);
               
-              if (!matchId && !matchProductId && !matchProductName && !matchRemarks) {
+              if (!matchId && !matchProductId && !matchProductName && !matchRemarks && !matchMetadata) {
                   return false;
               }
           }
@@ -106,48 +110,57 @@ export default function TransactionLogPage() {
       });
   }, [transactions, searchTerm, typeFilter, startDate, endDate, sortConfig]);
 
-  // --- 📄 EXPORT DATA TO EXCEL (🟢 อัปเกรดใหม่) ---
+  // --- 📄 EXPORT DATA TO EXCEL (🟢 อัปเกรดใหม่ ตาม Requirement) ---
   const handleExport = () => {
       if (filteredData.length === 0) return alert("ไม่มีข้อมูลสำหรับ Export");
       
       const exportPayload = filteredData.map(tx => {
           const meta = tx.metadata || {};
 
+          // 🟢 พยายามดึงเลขเอกสาร หรือ PO จาก metadata หรือหมายเหตุ (Remarks)
+          let docRef = meta.po_number || meta.doc_no || '-';
+          if (docRef === '-' && tx.remarks) {
+              // ตรวจจับแพทเทิร์น RCV-xxx, PO-xxx, TO-xxx ในช่องหมายเหตุ
+              const match = tx.remarks.match(/(RCV-[\w-]+|PO-[\w-]+|TO-[\w-]+)/);
+              if (match) docRef = match[0];
+          }
+
           // ข้อมูลพื้นฐานที่ทุก Type ต้องมี
           const row: any = {
               'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
               'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
               'รหัสอ้างอิง (Txn ID)': tx.transaction_id,
+              'เลขเอกสาร / PO': docRef, // 🟢 เพิ่มเลข PO / เอกสารอ้างอิง
               'ประเภท (Type)': tx.transaction_type,
               'รหัสสินค้า (SKU)': tx.product_id,
               'ชื่อสินค้า (Product Name)': tx.product_name,
               'หมวดหมู่ (Category)': tx.category,
               'จำนวนการเปลี่ยนแปลง (Qty Change)': tx.qty,
               'ยอดคงเหลือ (Balance)': tx.balance,
+              'หน่วย (Unit)': meta.unit || tx.base_uom, // 🟢 เพิ่มหน่วยจ่าย/รับ
+              'ตำแหน่ง (Location)': meta.location || tx.default_location, // 🟢 เพิ่ม Location
+              'MFG Date': meta.mfg_date || '-', // 🟢 เพิ่ม MFG
+              'EXP Date': meta.exp_date || '-', // 🟢 เพิ่ม EXP
           };
 
           // 🟢 แทรกคอลัมน์พิเศษสำหรับ INBOUND
           if (tx.transaction_type === 'INBOUND') {
               const orderedQty = Number(meta.ordered_qty) || 0;
               const receivedQty = tx.qty;
-              const diff = receivedQty - orderedQty;
-              
-              let discrepancy = '-';
-              if (orderedQty > 0) {
-                  if (diff > 0) discrepancy = `ส่งเกิน +${diff}`;
-                  else if (diff < 0) discrepancy = `ค้างส่ง ${diff}`;
-                  else discrepancy = 'ครบถ้วน (OK)';
-              }
+              const diff = receivedQty - orderedQty; // ขาดคือติดลบ, เกินคือบวก
 
               row['กำหนดส่ง (Scheduled)'] = meta.scheduled_date ? new Date(meta.scheduled_date).toLocaleDateString('th-TH') : '-';
-              row['สถานะเวลา (Time Status)'] = meta.time_status || '-'; // มาก่อน, ตรงเวลา, ล่าช้า
+              row['สถานะเวลา (Time Status)'] = meta.time_status || '-'; 
               row['อุณหภูมิรถ (Vehicle Temp °C)'] = meta.vehicle_temp ? `${meta.vehicle_temp}` : '-';
               row['อุณหภูมิสินค้า (Product Temp °C)'] = meta.product_temp ? `${meta.product_temp}` : '-';
               row['ยอดสั่งซื้อ (Ordered Qty)'] = orderedQty > 0 ? orderedQty : '-';
               row['ยอดรับจริง (Received Qty)'] = receivedQty;
-              row['ค้างส่ง/ส่งเกิน (Discrepancy)'] = discrepancy;
+              
+              // 🟢 Discrepancy (รายงานเป็นแค่ตัวเลข เพื่อให้ทำ Sum ใน Excel ได้)
+              row['ค้างส่ง/ส่งเกิน (Discrepancy)'] = orderedQty > 0 ? diff : 0; 
+
           } else {
-              // สำหรับ OUTBOUND/ADJUST ให้ปล่อยว่างเพื่อจัด Format Excel ให้ตรงกัน
+              // สำหรับ OUTBOUND/ADJUST ปล่อยว่างไว้เพื่อรักษาโครงสร้าง Column
               row['กำหนดส่ง (Scheduled)'] = '-';
               row['สถานะเวลา (Time Status)'] = '-';
               row['อุณหภูมิรถ (Vehicle Temp °C)'] = '-';
@@ -208,7 +221,7 @@ export default function TransactionLogPage() {
               <Search className="absolute left-3 top-2.5 text-slate-400" size={18}/>
               <input 
                   type="text" 
-                  placeholder="Deep Search: รหัส, ชื่อสินค้า, หมายเหตุ, ID..." 
+                  placeholder="Deep Search: รหัส, ชื่อสินค้า, เลข PO/เอกสาร..." 
                   className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all shadow-inner bg-slate-50 focus:bg-white"
                   value={searchTerm} 
                   onChange={e => setSearchTerm(e.target.value)}
@@ -295,7 +308,6 @@ export default function TransactionLogPage() {
                             </td>
                             <td className="p-4 text-xs text-slate-600 truncate max-w-[250px]" title={tx.remarks}>
                                 {tx.remarks || '-'}
-                                {/* 🟢 เพิ่ม Badge เล็กๆ ถ้ามีการเก็บข้อมูลอุณหภูมิมาด้วย */}
                                 {tx.transaction_type === 'INBOUND' && tx.metadata?.vehicle_temp && (
                                     <span className="ml-2 inline-flex items-center gap-1 bg-cyan-50 text-cyan-600 px-1.5 py-0.5 rounded text-[9px] font-bold border border-cyan-100">
                                         <Snowflake size={10}/> QC Logged

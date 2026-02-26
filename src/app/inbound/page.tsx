@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabaseClient'; 
-import { Plus, Trash2, Search, FileUp, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History } from 'lucide-react';
+import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface FormDataState {
@@ -41,6 +41,12 @@ const Inbound = () => {
   const [vendorSearchInput, setVendorSearchInput] = useState<string>('');
   const [showVendorDropdown, setShowVendorDropdown] = useState<boolean>(false);
   const vendorDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // --- EXPORT STATE ---
+  const todayStr = new Date().toISOString().split('T')[0];
+  const [showExportModal, setShowExportModal] = useState<boolean>(false);
+  const [exportStart, setExportStart] = useState<string>(todayStr);
+  const [exportEnd, setExportEnd] = useState<string>(todayStr);
 
   // --- INIT ---
   useEffect(() => {
@@ -178,6 +184,71 @@ const Inbound = () => {
     };
     reader.readAsArrayBuffer(file);
     event.target.value = '';
+  };
+
+  // --- 🟢 EXPORT REPORT FUNCTION ---
+  const handleExportPending = async () => {
+    if (!exportStart || !exportEnd) return alert("กรุณาเลือกวันที่ให้ครบถ้วน");
+    setLoading(true);
+    try {
+        const { data: pos, error } = await supabase
+            .from('purchase_orders')
+            .select('*, po_lines(*)')
+            .in('status', ['PENDING', 'PARTIAL'])
+            .gte('delivery_date', exportStart)
+            .lte('delivery_date', exportEnd)
+            .order('delivery_date', { ascending: true });
+
+        if (error) throw error;
+
+        const exportData: any[] = [];
+        const today = new Date().toISOString().split('T')[0];
+
+        for (const po of pos || []) {
+            const vendor = vendors.find(v => v.vendor_id === po.vendor_id);
+            const vendorName = vendor ? vendor.vendor_name : po.vendor_id;
+            let timing = po.delivery_date < today ? 'LATE (ล่าช้า)' : (po.delivery_date === today ? 'TODAY (วันนี้)' : 'FUTURE (ล่วงหน้า)');
+
+            for (const line of po.po_lines || []) {
+                const pendingQty = (line.ordered_qty || 0) - (line.received_qty || 0);
+                
+                // ดึงเฉพาะรายการที่ยังค้างส่งอยู่จริงๆ
+                if (pendingQty > 0) {
+                    const product = products.find(p => p.product_id === line.product_id);
+                    exportData.push({
+                        "PO Number": po.po_number,
+                        "Delivery Date": po.delivery_date,
+                        "Timing Status": timing,
+                        "PO Status": po.status,
+                        "Vendor Code": po.vendor_id,
+                        "Vendor Name": vendorName,
+                        "Product Code": line.product_id,
+                        "Product Name": product ? product.product_name : 'Unknown',
+                        "Category": product ? product.category : '',
+                        "Ordered Qty": line.ordered_qty,
+                        "Received Qty": line.received_qty,
+                        "Pending Qty": pendingQty,
+                        "Base Unit": product ? product.base_uom : 'Unit'
+                    });
+                }
+            }
+        }
+
+        if (exportData.length === 0) {
+            alert("ไม่พบรายการสินค้าค้างส่งในช่วงวันที่เลือก");
+            setLoading(false);
+            return;
+        }
+
+        const ws = XLSX.utils.json_to_sheet(exportData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Pending_Deliveries");
+        XLSX.writeFile(wb, `Pending_Report_${exportStart}_to_${exportEnd}.xlsx`);
+        setShowExportModal(false);
+    } catch (error: any) {
+        alert("Export Error: " + error.message);
+    }
+    setLoading(false);
   };
 
   const selectPO = (po: any) => {
@@ -352,10 +423,8 @@ const Inbound = () => {
             const { data: allLots } = await supabase.from('inventory_lots').select('quantity').eq('product_id', item.productId);
             const balanceAfter = allLots?.reduce((sum, l) => sum + Number(l.quantity), 0) || 0;
 
-            // แปลงยอดสั่งซื้อ (Ordered Qty) ให้เป็นหน่วยฐาน (Base) เพื่อให้ Export Excel คำนวณส่วนต่างได้ถูกต้อง
             const baseOrderedQty = item.qtyOrdered ? (parseFloat(item.qtyOrdered) * convRate) : 0;
             
-            // แปลงสถานะเป็นภาษาไทยให้ Export สวยๆ
             let thaiTimingStatus = 'ตรงเวลา';
             if (deliveryTiming === 'LATE') thaiTimingStatus = 'ล่าช้า';
             if (deliveryTiming === 'EARLY') thaiTimingStatus = 'มาก่อนกำหนด';
@@ -366,7 +435,6 @@ const Inbound = () => {
                 quantity_change: baseQty,
                 balance_after: balanceAfter,
                 remarks: `รับเข้า (Inbound) ตามเอกสาร ${formData.docNo}`,
-                // 🟢 เพิ่มข้อมูล Metadata สำหรับหน้า Export ตรงนี้ครับ
                 metadata: {
                     scheduled_date: activeTab === 'po' && selectedPO ? selectedPO.delivery_date : null,
                     time_status: thaiTimingStatus,
@@ -434,12 +502,17 @@ const Inbound = () => {
         <div className="w-96 bg-white border-r border-slate-200 flex flex-col">
             {activeTab === 'po' ? (
                 <>
-                    <div className="p-4 bg-blue-50 border-b border-blue-100">
-                        <label className="flex items-center justify-center gap-2 w-full bg-white border border-dashed border-blue-400 text-blue-600 p-3 rounded-lg cursor-pointer hover:bg-blue-50 transition-colors shadow-sm">
-                            <FileUp size={20}/> <span className="font-bold">Import PO (Excel)</span>
+                    {/* 🟢 อัปเดตเมนู Import / Export ให้อยู่รวมกันอย่างเป็นระเบียบ */}
+                    <div className="p-4 bg-blue-50 border-b border-blue-100 flex flex-col gap-2">
+                        <label className="flex items-center justify-center gap-2 w-full bg-white border border-dashed border-blue-400 text-blue-600 p-2.5 rounded-lg cursor-pointer hover:bg-blue-50 transition-colors shadow-sm">
+                            <FileUp size={18}/> <span className="font-bold text-sm">Import PO (Excel)</span>
                             <input type="file" accept=".xlsx, .xls, .csv" className="hidden" onChange={handleImportPO}/>
                         </label>
+                        <button onClick={() => setShowExportModal(true)} className="flex items-center justify-center gap-2 w-full bg-orange-50 border border-orange-300 text-orange-600 p-2.5 rounded-lg hover:bg-orange-100 transition-colors shadow-sm font-bold text-sm">
+                            <FileDown size={18}/> Export ค้างส่ง (Pending)
+                        </button>
                     </div>
+                    
                     <div className="grid grid-cols-2 border-b border-slate-200 bg-slate-50">
                         <button onClick={() => {setListTab('PENDING'); setDateFilter('TODAY');}} className={`py-3 text-sm font-bold flex items-center justify-center gap-2 transition-all ${listTab === 'PENDING' ? 'bg-white text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}><Calendar size={14}/> Wait to Receive</button>
                         <button onClick={() => setListTab('PARTIAL')} className={`py-3 text-sm font-bold flex items-center justify-center gap-2 transition-all ${listTab === 'PARTIAL' ? 'bg-white text-orange-600 border-b-2 border-orange-600' : 'text-slate-500 hover:text-slate-700'}`}><Clock size={14}/> Partial Pending</button>
@@ -621,6 +694,54 @@ const Inbound = () => {
             </div>
         </div>
       </div>
+
+      {/* 🟢 MODAL สำหรับเลือกวันที่ Export รายงานค้างส่ง */}
+      {showExportModal && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden flex flex-col">
+                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                        <FileDown size={18} className="text-orange-500"/> 
+                        Export รายงานสินค้าค้างส่ง
+                    </h3>
+                    <button onClick={() => setShowExportModal(false)} className="text-slate-400 hover:text-red-500 transition-colors">
+                        <X size={20}/>
+                    </button>
+                </div>
+                <div className="p-6 flex flex-col gap-5">
+                    <div>
+                        <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Start Date (ตั้งแต่วันที่)</label>
+                        <input 
+                            type="date" 
+                            className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-orange-200 focus:border-orange-500 transition-colors" 
+                            value={exportStart} 
+                            onChange={e => setExportStart(e.target.value)} 
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">End Date (ถึงวันที่)</label>
+                        <input 
+                            type="date" 
+                            className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-orange-200 focus:border-orange-500 transition-colors" 
+                            value={exportEnd} 
+                            onChange={e => setExportEnd(e.target.value)} 
+                        />
+                    </div>
+                </div>
+                <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+                    <button onClick={() => setShowExportModal(false)} className="px-4 py-2 text-slate-500 font-bold hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
+                    <button 
+                        onClick={handleExportPending} 
+                        disabled={loading} 
+                        className="px-6 py-2 bg-orange-500 text-white font-bold rounded-lg hover:bg-orange-600 shadow-md shadow-orange-200 transition-all flex items-center gap-2"
+                    >
+                        {loading ? 'Processing...' : 'Download Excel'}
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
     </div>
   );
 };
