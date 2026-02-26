@@ -34,20 +34,14 @@ interface ParsedOrder {
 }
 
 const Outbound = () => {
-  // --- STATE ---
   const [activeTab, setActiveTab] = useState<string>('scan'); 
-  
-  // State: Scan / Manual Mode
   const [cart, setCart] = useState<any[]>([]);
   const [formData, setFormData] = useState<FormDataState>({
     docNo: '', branchId: '', branchName: '', refDoc: '', note: ''
   });
-  
-  // State: Bulk Import Mode
   const [bulkOrders, setBulkOrders] = useState<ParsedOrder[]>([]);
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
 
-  // Master Data State
   const [inventory, setInventory] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
   const [productSearchTerm, setProductSearchTerm] = useState<string>('');
@@ -55,12 +49,10 @@ const Outbound = () => {
   const [showBranchDropdown, setShowBranchDropdown] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   
-  // Refs
   const scannerInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
   const [scanInput, setScanInput] = useState<string>('');
 
-  // --- INIT ---
   useEffect(() => {
     setFormData(prev => ({ ...prev, docNo: `TO-MNL-${Date.now()}` }));
     fetchMasterData();
@@ -107,84 +99,7 @@ const Outbound = () => {
       setShowBranchDropdown(false);
   };
 
-  // ==========================================
-  // SHARED: INVENTORY DEDUCTION 
-  // ==========================================
-  const deductStockFIFO = async (productId: string, qtyToDeduct: number, docNo: string, targetBranchId: string, forceReason?: string, customDate?: string) => {
-      let remaining = qtyToDeduct;
-      
-      const { data: lots, error } = await supabase
-          .from('inventory_lots')
-          .select('*')
-          .eq('product_id', productId)
-          .gt('quantity', 0)
-          .order('mfg_date', { ascending: true, nullsFirst: false });
-          
-      if (error) throw error;
-
-      for (const lot of (lots || [])) {
-          if (remaining <= 0) break;
-          const deductAmt = Math.min(Number(lot.quantity), remaining);
-          
-          await supabase.from('inventory_lots')
-              .update({ 
-                  quantity: Number(lot.quantity) - deductAmt,
-                  last_updated: new Date().toISOString()
-              })
-              .eq('lot_id', lot.lot_id);
-              
-          remaining -= deductAmt;
-      }
-
-      if (remaining > 0) {
-          const { data: anyLot } = await supabase.from('inventory_lots').select('*').eq('product_id', productId).limit(1);
-          
-          if (anyLot && anyLot.length > 0) {
-              await supabase.from('inventory_lots').update({ 
-                  quantity: Number(anyLot[0].quantity) - remaining 
-              }).eq('lot_id', anyLot[0].lot_id);
-          } else {
-              await supabase.from('inventory_lots').insert([{
-                  product_id: productId,
-                  quantity: -remaining,
-                  storage_location: 'PENDING_RCV' 
-              }]);
-          }
-      }
-
-      const { data: newLots } = await supabase.from('inventory_lots').select('quantity').eq('product_id', productId);
-      const newBalance = newLots?.reduce((sum, l) => sum + Number(l.quantity), 0) || 0;
-
-      let txRemarks = `จ่ายออกตามเอกสาร ${docNo}`;
-      if (forceReason) txRemarks += ` (🚨 บังคับตัด: ${forceReason})`;
-
-      const txDate = customDate ? `${customDate}T12:00:00.000Z` : new Date().toISOString();
-
-      await supabase.from('transactions_log').insert([{
-          transaction_type: 'OUTBOUND',
-          product_id: productId,
-          quantity_change: -qtyToDeduct,
-          balance_after: newBalance,
-          branch_id: targetBranchId, 
-          remarks: txRemarks,
-          transaction_date: txDate 
-      }]);
-  };
-
-  // ==========================================
-  // MODE 1: SCAN & MANUAL LOGIC
-  // ==========================================
-  const handleScan = (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Enter') {
-          e.preventDefault();
-          const scannedCode = scanInput.trim();
-          if (scannedCode) {
-              processBarcode(scannedCode);
-              setScanInput(''); 
-          }
-      }
-  };
-
+  // 1. SCAN LOGIC (ตัดทีละบิล)
   const processBarcode = (barcode: string) => {
       const stockItem = inventory.find(i => i.product_id.toLowerCase() === barcode.toLowerCase());
       if (!stockItem) return alert(`❌ ไม่พบรหัสสินค้า [${barcode}] ในระบบ`);
@@ -202,10 +117,15 @@ const Outbound = () => {
       }
   };
 
-  const updateItem = (index: number, field: string, value: any) => {
-      const newCart = [...cart];
-      newCart[index][field] = value;
-      setCart(newCart);
+  const handleScan = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+          e.preventDefault();
+          const scannedCode = scanInput.trim();
+          if (scannedCode) {
+              processBarcode(scannedCode);
+              setScanInput(''); 
+          }
+      }
   };
 
   const isCartValid = cart.every(item => parseInt(item.qtyPicked) > 0 && parseInt(item.qtyPicked) <= item.stockQty);
@@ -215,7 +135,6 @@ const Outbound = () => {
     if (!formData.branchName || !formData.branchId) return alert("กรุณาระบุสาขา/ผู้รับให้ถูกต้อง");
 
     let forceReason = '';
-    
     if (!isCartValid) {
         const reason = window.prompt("⚠️ มียอดเบิกเกินสต๊อกในระบบ!\nหากยืนยันต้องการ 'บังคับตัดสต๊อก (ติดลบ)' กรุณาระบุเหตุผล:");
         if (reason === null) return; 
@@ -227,22 +146,19 @@ const Outbound = () => {
 
     setLoading(true);
     try {
-        // 🟢 1. เช็คว่า Doc No นี้ซ้ำกับที่มีอยู่แล้วหรือไม่
         const { data: exist } = await supabase.from('outbound_orders').select('to_number').eq('to_number', formData.docNo).single();
         if (exist) {
             alert(`❌ เลขเอกสาร ${formData.docNo} นี้ถูกใช้จ่ายออกไปแล้ว`);
             setLoading(false); return;
         }
 
-        // 🟢 2. เช็คว่า Ref Document ที่คีย์เข้ามา ซ้ำกับบิลที่เคยอัปโหลดมาแล้วหรือไม่
         if (formData.refDoc) {
             const { data: existRef } = await supabase.from('outbound_orders')
                 .select('to_number')
                 .or(`to_number.eq.${formData.refDoc},ref_document.eq.${formData.refDoc}`)
                 .limit(1);
-            
             if (existRef && existRef.length > 0) {
-                alert(`❌ เอกสารอ้างอิง "${formData.refDoc}" นี้มีประวัติถูกทำรายการจ่ายออกไปแล้วในระบบ (ป้องกันการลงซ้ำ)`);
+                alert(`❌ เอกสารอ้างอิง "${formData.refDoc}" นี้มีประวัติถูกทำรายการจ่ายออกไปแล้วในระบบ`);
                 setLoading(false); return;
             }
         }
@@ -254,18 +170,39 @@ const Outbound = () => {
             delivery_date: new Date().toISOString().split('T')[0]
         }]);
 
+        // ตัดสต๊อกแบบเดิม (เพราะสแกนทีละบิล ทำแบบเดิมได้)
         const linesToInsert = [];
         for (const item of cart) {
-            const pickQty = parseInt(item.qtyPicked);
-            await deductStockFIFO(item.productId, pickQty, formData.docNo, formData.branchId, forceReason);
+            const qtyToDeduct = parseInt(item.qtyPicked);
+            let remaining = qtyToDeduct;
+            const { data: lots } = await supabase.from('inventory_lots').select('*').eq('product_id', item.productId).gt('quantity', 0).order('mfg_date', { ascending: true, nullsFirst: false });
+            
+            for (const lot of (lots || [])) {
+                if (remaining <= 0) break;
+                const deductAmt = Math.min(Number(lot.quantity), remaining);
+                await supabase.from('inventory_lots').update({ quantity: Number(lot.quantity) - deductAmt }).eq('lot_id', lot.lot_id);
+                remaining -= deductAmt;
+            }
+
+            if (remaining > 0) {
+                const { data: anyLot } = await supabase.from('inventory_lots').select('*').eq('product_id', item.productId).limit(1);
+                if (anyLot && anyLot.length > 0) {
+                    await supabase.from('inventory_lots').update({ quantity: Number(anyLot[0].quantity) - remaining }).eq('lot_id', anyLot[0].lot_id);
+                } else {
+                    await supabase.from('inventory_lots').insert([{ product_id: item.productId, quantity: -remaining, storage_location: 'PENDING_RCV' }]);
+                }
+            }
+
+            const { data: newLots } = await supabase.from('inventory_lots').select('quantity').eq('product_id', item.productId);
+            const newBalance = newLots?.reduce((sum, l) => sum + Number(l.quantity), 0) || 0;
+
+            await supabase.from('transactions_log').insert([{
+                transaction_type: 'OUTBOUND', product_id: item.productId, quantity_change: -qtyToDeduct, balance_after: newBalance,
+                branch_id: formData.branchId, remarks: `จ่ายออกตามเอกสาร ${formData.docNo}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
+            }]);
 
             linesToInsert.push({
-                to_number: formData.docNo,
-                rm_code: item.productId,
-                description: item.productName,
-                qty: pickQty,
-                unit: item.unit,
-                unit_cost: 0, cost_amt: 0
+                to_number: formData.docNo, rm_code: item.productId, description: item.productName, qty: qtyToDeduct, unit: item.unit
             });
         }
         await supabase.from('outbound_lines').insert(linesToInsert);
@@ -279,9 +216,7 @@ const Outbound = () => {
     setLoading(false);
   };
 
-  // ==========================================
-  // MODE 2: BULK IMPORT EXCEL LOGIC
-  // ==========================================
+  // 2. BULK IMPORT EXCEL LOGIC
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -310,12 +245,7 @@ const Outbound = () => {
                         dDate = `${y}-${m}-${d}`;
                     }
                     currentHeader = {
-                        to_number: col0,
-                        to_warehouse: String(row[1]).trim(),
-                        ref_document: String(row[3]).trim(),
-                        delivery_date: dDate,
-                        items: [],
-                        isDuplicate: false
+                        to_number: col0, to_warehouse: String(row[1]).trim(), ref_document: String(row[3]).trim(), delivery_date: dDate, items: [], isDuplicate: false
                     };
                     parsedOrders[col0] = currentHeader;
                     continue;
@@ -328,14 +258,7 @@ const Outbound = () => {
                         const currentStock = stockItem ? stockItem.current_qty : 0;
                         
                         currentHeader.items.push({
-                            rm_code: col0,
-                            description: String(row[1]).trim(),
-                            qty: qty,
-                            unit: String(row[3]).trim(),
-                            unit_cost: parseFloat(row[4]) || 0,
-                            cost_amt: parseFloat(row[6]) || 0,
-                            inStock: currentStock,
-                            hasError: currentStock < qty 
+                            rm_code: col0, description: String(row[1]).trim(), qty: qty, unit: String(row[3]).trim(), unit_cost: parseFloat(row[4]) || 0, cost_amt: parseFloat(row[6]) || 0, inStock: currentStock, hasError: currentStock < qty 
                         });
                     }
                 }
@@ -343,20 +266,11 @@ const Outbound = () => {
 
             const toNumbers = Object.keys(parsedOrders);
             if (toNumbers.length > 0) {
-                // 🟢 เช็คว่าบิลใน Excel ตรงกับ to_number ในระบบไหม
                 const { data: existByToNumber } = await supabase.from('outbound_orders').select('to_number').in('to_number', toNumbers);
-                
-                // 🟢 เช็คว่าบิลใน Excel ตรงกับ ref_document ที่มีคนคีย์ Manual ไว้ไหม
                 const { data: existByRef } = await supabase.from('outbound_orders').select('ref_document').in('ref_document', toNumbers);
                 
-                const duplicateSet = new Set([
-                    ...(existByToNumber?.map(d => d.to_number) || []),
-                    ...(existByRef?.map(d => d.ref_document) || [])
-                ]);
-                
-                Object.values(parsedOrders).forEach(order => {
-                    if (duplicateSet.has(order.to_number)) order.isDuplicate = true;
-                });
+                const duplicateSet = new Set([ ...(existByToNumber?.map(d => d.to_number) || []), ...(existByRef?.map(d => d.ref_document) || []) ]);
+                Object.values(parsedOrders).forEach(order => { if (duplicateSet.has(order.to_number)) order.isDuplicate = true; });
             }
 
             const globalReq: Record<string, number> = {};
@@ -382,11 +296,11 @@ const Outbound = () => {
   const validOrdersToProcess = bulkOrders.filter(o => !o.isDuplicate);
   const needsForceIssue = validOrdersToProcess.some(o => o.items.some(i => i.hasError));
 
+  // 🚀 ฟังก์ชันสุดยอดความเร็ว Bulk Processing (ทำ FIFO และหักลบใน Memory ก่อนยัดลง DB ตู้มเดียว)
   const handleSubmitBulk = async () => {
     if (validOrdersToProcess.length === 0) return alert("ไม่มีเอกสารใหม่ให้บันทึก (เป็นเอกสารซ้ำทั้งหมด)");
     
     let forceReason = '';
-    
     if (needsForceIssue) {
         const reason = window.prompt("⚠️ พบรายการที่สต๊อกไม่พอจ่าย!\nหากต้องการ 'บังคับตัดสต๊อก' กรุณาระบุเหตุผลเพื่อบันทึกในระบบ:");
         if (reason === null) return; 
@@ -398,43 +312,103 @@ const Outbound = () => {
 
     setLoading(true);
     try {
+        // 1. ดึงข้อมูลสินค้าที่ต้องใช้ทั้งหมดมารอไว้ใน Memory ก่อน
+        const requiredProducts = [...new Set(validOrdersToProcess.flatMap(o => o.items.map(i => i.rm_code)))];
+        
+        const { data: allLots } = await supabase.from('inventory_lots')
+            .select('*').in('product_id', requiredProducts).gt('quantity', 0)
+            .order('mfg_date', { ascending: true, nullsFirst: false });
+
+        // จัดกลุ่ม Lot ตามสินค้า เพื่อง่ายต่อการคำนวณ FIFO ใน Memory
+        const lotsByProduct: Record<string, any[]> = {};
+        requiredProducts.forEach(id => lotsByProduct[id] = []);
+        (allLots || []).forEach(lot => {
+            lotsByProduct[lot.product_id].push({...lot}); // Clone object
+        });
+
+        // จำลอง Balance รวมใน Memory
+        const balanceByProduct: Record<string, number> = {};
+        requiredProducts.forEach(id => {
+            balanceByProduct[id] = lotsByProduct[id].reduce((sum, l) => sum + Number(l.quantity), 0);
+        });
+
+        // 2. เตรียม Array สำหรับเก็บคำสั่งยิงเข้า Database รวดเดียว (Bulk Insert/Upsert)
+        const ordersToInsert: any[] = [];
+        const linesToInsert: any[] = [];
+        const logsToInsert: any[] = [];
+        const newLotsToInsert: any[] = [];
+        const lotsMapToUpsert = new Map<string, any>(); // เก็บ Lot ที่โดนตัดสต๊อก
+
+        // 3. เริ่มลูปจำลองตัดสต๊อกใน Memory (ทำงานเสร็จในพริบตาเดียว)
         for (const order of validOrdersToProcess) {
-            
             const rawBranch = order.to_warehouse ? String(order.to_warehouse).trim() : '';
-            const matchedBranch = branches.find(b => 
-                rawBranch === b.branch_id || 
-                rawBranch === b.branch_name ||
-                rawBranch.includes(b.branch_id) || 
-                rawBranch.includes(b.branch_name)
-            );
+            const matchedBranch = branches.find(b => rawBranch === b.branch_id || rawBranch === b.branch_name || rawBranch.includes(b.branch_id) || rawBranch.includes(b.branch_name));
             const targetBranchId = matchedBranch ? matchedBranch.branch_id : rawBranch;
 
-            await supabase.from('outbound_orders').insert([{
-                to_number: order.to_number,
-                to_warehouse: order.to_warehouse,
-                ref_document: order.ref_document,
-                delivery_date: order.delivery_date,
-                summit_date: order.delivery_date 
-            }]);
+            ordersToInsert.push({
+                to_number: order.to_number, to_warehouse: order.to_warehouse,
+                ref_document: order.ref_document, delivery_date: order.delivery_date, summit_date: order.delivery_date 
+            });
 
-            const linesToInsert = [];
             for (const item of order.items) {
-                await deductStockFIFO(item.rm_code, item.qty, order.to_number, targetBranchId, forceReason, order.delivery_date);
-
                 linesToInsert.push({
-                    to_number: order.to_number,
-                    rm_code: item.rm_code,
-                    description: item.description,
-                    qty: item.qty,
-                    unit: item.unit,
-                    unit_cost: item.unit_cost,
-                    cost_amt: item.cost_amt
+                    to_number: order.to_number, rm_code: item.rm_code, description: item.description,
+                    qty: item.qty, unit: item.unit, unit_cost: item.unit_cost, cost_amt: item.cost_amt
+                });
+
+                // --- IN-MEMORY FIFO DEDUCTION ---
+                let remaining = item.qty;
+                const productLots = lotsByProduct[item.rm_code];
+
+                for (const lot of productLots) {
+                    if (remaining <= 0) break;
+                    if (lot.quantity <= 0) continue; 
+
+                    const deductAmt = Math.min(lot.quantity, remaining);
+                    lot.quantity -= deductAmt;
+                    remaining -= deductAmt;
+
+                    // บันทึกว่า Lot นี้ถูกหักลบไปเท่าไหร่ (เพื่อรอ Upsert)
+                    lotsMapToUpsert.set(lot.lot_id, {
+                        lot_id: lot.lot_id,
+                        product_id: lot.product_id,
+                        storage_location: lot.storage_location,
+                        quantity: lot.quantity,
+                        mfg_date: lot.mfg_date,
+                        exp_date: lot.exp_date
+                    });
+                }
+
+                // ถ้าสต๊อกไม่พอ (ต้องบังคับตัดติดลบ)
+                if (remaining > 0) {
+                    newLotsToInsert.push({ product_id: item.rm_code, quantity: -remaining, storage_location: 'PENDING_RCV' });
+                }
+
+                balanceByProduct[item.rm_code] -= item.qty;
+                const txDate = order.delivery_date ? `${order.delivery_date}T12:00:00.000Z` : new Date().toISOString();
+
+                logsToInsert.push({
+                    transaction_type: 'OUTBOUND', product_id: item.rm_code, quantity_change: -item.qty,
+                    balance_after: balanceByProduct[item.rm_code], branch_id: targetBranchId, 
+                    remarks: `จ่ายออกตามเอกสาร ${order.to_number}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
+                    transaction_date: txDate 
                 });
             }
-            await supabase.from('outbound_lines').insert(linesToInsert);
         }
 
-        alert(`✅ นำเข้าข้อมูลและตัดสต๊อกสำเร็จ จำนวน ${validOrdersToProcess.length} เอกสาร!`);
+        // 4. โยนข้อมูลที่คำนวณเสร็จแล้วเข้า Database แบบขนาน (Promise.all)
+        const promises = [];
+        if (ordersToInsert.length > 0) promises.push(supabase.from('outbound_orders').insert(ordersToInsert));
+        if (linesToInsert.length > 0) promises.push(supabase.from('outbound_lines').insert(linesToInsert));
+        if (logsToInsert.length > 0) promises.push(supabase.from('transactions_log').insert(logsToInsert));
+        if (newLotsToInsert.length > 0) promises.push(supabase.from('inventory_lots').insert(newLotsToInsert));
+
+        const lotsToUpsert = Array.from(lotsMapToUpsert.values());
+        if (lotsToUpsert.length > 0) promises.push(supabase.from('inventory_lots').upsert(lotsToUpsert));
+
+        await Promise.all(promises);
+
+        alert(`✅ นำเข้าข้อมูลและตัดสต๊อกสำเร็จ จำนวน ${validOrdersToProcess.length} เอกสาร อย่างรวดเร็ว!`);
         setBulkOrders([]);
         fetchMasterData();
     } catch (error: any) { alert("❌ Error: " + error.message); }
@@ -455,7 +429,6 @@ const Outbound = () => {
       </div>
 
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
-        
         {/* === LEFT PANEL === */}
         {activeTab === 'scan' && (
             <div className="w-full md:w-[400px] bg-white border-b md:border-b-0 md:border-r flex flex-col shrink-0">
@@ -504,10 +477,8 @@ const Outbound = () => {
 
         {/* === RIGHT PANEL === */}
         <div className="flex-1 flex flex-col bg-slate-50 overflow-hidden min-w-0">
-            
             {activeTab === 'scan' ? (
                 <>
-                    {/* 🟢 แก้ไขเรื่อง Layout Dropdown สาขา โดยเปลี่ยนเป็น Grid และเอา overflow-x-auto ออก */}
                     <div className="bg-white p-4 border-b border-slate-200 shadow-sm z-20">
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="border-b md:border-b-0 md:border-r border-slate-100 pb-2 md:pb-0 md:pr-4">
@@ -562,7 +533,7 @@ const Outbound = () => {
                                             </td>
                                             <td className="p-3 text-center font-mono bg-slate-50">{item.stockQty}</td>
                                             <td className="p-3 text-center bg-red-50/30 border-x">
-                                                <input type="number" className={`w-full p-2 border rounded-lg text-center font-bold outline-none ${isError ? 'border-orange-500 text-orange-600 bg-orange-50' : 'border-slate-300'}`} value={item.qtyPicked} onChange={e => updateItem(idx, 'qtyPicked', e.target.value)}/>
+                                                <input type="number" className={`w-full p-2 border rounded-lg text-center font-bold outline-none ${isError ? 'border-orange-500 text-orange-600 bg-orange-50' : 'border-slate-300'}`} value={item.qtyPicked} onChange={e => {const newCart = [...cart]; newCart[idx].qtyPicked = e.target.value; setCart(newCart);}}/>
                                             </td>
                                             <td className="p-3 text-center text-xs uppercase">{item.unit}</td>
                                             <td className="p-3"><button onClick={() => setCart(cart.filter((_, i) => i !== idx))} className="text-slate-300 hover:text-red-500"><Trash2 size={18}/></button></td>
@@ -585,7 +556,6 @@ const Outbound = () => {
                     </div>
                 </>
             ) : (
-                // --- BULK PREVIEW UI ---
                 <div className="flex flex-col h-full bg-slate-100 p-4 md:p-6 min-w-0">
                     <div className="bg-white p-6 md:p-8 rounded-xl border-2 border-dashed border-red-300 text-center mb-6 shadow-sm">
                         <label className="cursor-pointer block">
@@ -605,7 +575,7 @@ const Outbound = () => {
                                     disabled={validOrdersToProcess.length === 0 || loading} 
                                     className={`w-full md:w-auto px-6 py-2 rounded-lg text-white font-bold shadow ${validOrdersToProcess.length === 0 ? 'bg-slate-400' : needsForceIssue ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'}`}
                                 >
-                                    {loading ? 'Processing...' : needsForceIssue ? `บังคับนำเข้าและตัดสต๊อก (${validOrdersToProcess.length})` : `นำเข้าและตัดสต๊อก (${validOrdersToProcess.length})`}
+                                    {loading ? 'Processing...' : needsForceIssue ? `บังคับนำเข้าและตัดสต๊อก (${validOrdersToProcess.length})` : `⚡ นำเข้าและตัดสต๊อกทันที (${validOrdersToProcess.length})`}
                                 </button>
                             </div>
                             
