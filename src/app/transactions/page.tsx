@@ -300,13 +300,17 @@ export default function TransactionLogPage() {
                         return (
                         <tr key={tx.transaction_id || idx} className={`transition-colors group ${hasAnomaly ? 'bg-rose-50/50 hover:bg-rose-100/50' : 'hover:bg-slate-50'}`}>
                             <td className="p-4">
-                                <div className="font-bold text-slate-700 flex items-center gap-2">
-                                    {/* 🚨 แจ้งเตือน AI Anomaly */}
-                                    {hasAnomaly && <AlertOctagon size={16} className="text-rose-500 animate-pulse" title={tx.anomalies.join('\n')}/>}
-                                    {tx.dateObj.toLocaleDateString('th-TH')}
-                                </div>
-                                <div className="text-xs text-slate-400 mt-0.5 ml-6">{tx.dateObj.toLocaleTimeString('th-TH')} น.</div>
-                            </td>
+    <div className="font-bold text-slate-700 flex items-center gap-2">
+        {/* 🚨 แจ้งเตือน AI Anomaly */}
+        {hasAnomaly && (
+            <span title={tx.anomalies.join('\n')} className="flex items-center">
+                <AlertOctagon size={16} className="text-rose-500 animate-pulse" />
+            </span>
+        )}
+        {tx.dateObj.toLocaleDateString('th-TH')}
+    </div>
+    <div className="text-xs text-slate-400 mt-0.5 ml-6">{tx.dateObj.toLocaleTimeString('th-TH')} น.</div>
+</td>
                             <td className="p-4">
                                 <span className={`text-[10px] font-black px-2.5 py-1 rounded-md uppercase tracking-wider ${
                                     tx.transaction_type === 'INBOUND' ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' :
