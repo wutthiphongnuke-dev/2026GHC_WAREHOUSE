@@ -23,7 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   // --- States สำหรับ Notifications & Mobile Menu ---
   const [notifications, setNotifications] = useState<any[]>([]);
-  const [totalAlerts, setTotalAlerts] = useState<number>(0); // เก็บจำนวนแจ้งเตือนทั้งหมด
+  const [totalAlerts, setTotalAlerts] = useState<number>(0); 
   const [showNotif, setShowNotif] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -58,7 +58,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             }));
         
         setTotalAlerts(alerts.length);
-        // 🟢 จำกัดให้แสดงผลแค่ 20 รายการแรก เพื่อลดภาระของเบราว์เซอร์
         setNotifications(alerts.slice(0, 20)); 
       } catch (error) { console.error(error); }
     };
@@ -107,7 +106,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <header className="absolute top-2 sm:top-4 left-2 sm:left-4 right-2 sm:right-4 z-50">
           <nav className="mx-auto w-full max-w-[1920px] bg-slate-950/85 backdrop-blur-xl border border-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.25)] hover:shadow-[0_8px_40px_rgba(34,211,238,0.2)] transition-shadow duration-500 rounded-2xl px-3 sm:px-4 py-2.5 flex items-center justify-between gap-2 sm:gap-4 relative">
             
-            {/* 1. โลโก้ระบบ (Holographic Effect) */}
+            {/* 1. โลโก้ระบบ */}
             <Link href="/" className="flex items-center gap-2 sm:gap-3 group shrink-0">
               <div className="relative flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-blue-600 to-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.5)] group-hover:shadow-[0_0_25px_rgba(34,211,238,0.8)] transition-all duration-300">
                 <Database size={18} className="text-white relative z-10 sm:w-5 sm:h-5" />
@@ -119,18 +118,28 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </div>
             </Link>
 
-            {/* 2. เมนูนำทางตรงกลาง (Desktop Only) */}
-            <div className="hidden xl:flex items-center gap-1 flex-1 justify-center overflow-x-auto whitespace-nowrap [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+            {/* 2. เมนูนำทางตรงกลาง (Desktop & Tablet) */}
+            {/* 🟢 ปรับเปลี่ยนจาก xl:flex เป็น lg:flex ทำให้จอเล็กลงเมนูก็ยังอยู่ และปรับให้ Scroll แนวนอนได้เนียนๆ */}
+            <div className="hidden lg:flex items-center gap-1 flex-1 justify-start xl:justify-center overflow-x-auto whitespace-nowrap px-2 scroll-smooth [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden mask-image-fade">
+              
+              {/* Group 1: Core Operations */}
               <NavItem href="/dashboard" icon={<Activity size={16} />} label="Dashboard" />           
-              <NavItem href="/planning" icon={<BrainCircuit size={16} />} label="Planning" />
+              <NavItem href="/warehouse" icon={<Package size={16} />} label="Inventory" />
               <NavItem href="/inbound" icon={<PackagePlus size={16} />} label="Inbound" />
               <NavItem href="/outbound" icon={<Truck size={16} />} label="Outbound" />
+              <NavItem href="/transactions" icon={<History size={16} />} label="Logs" />
+              
+              <div className="w-[1px] h-5 bg-slate-700/50 mx-2 shrink-0"></div>
+
+              {/* Group 2: Reports & Tools */}
               <NavItem href="/branch-report" icon={<Store size={16} />} label="Branch Report" />
-              <NavItem href="/warehouse" icon={<Package size={16} />} label="Inventory" />
               <NavItem href="/cycle-count" icon={<RefreshCw size={16} />} label="Cycle Count" />
               <NavItem href="/print-labels" icon={<QrCode size={16} />} label="Labels" />
-              <NavItem href="/transactions" icon={<History size={16} />} label="Logs" />
-              <div className="w-[1px] h-5 bg-slate-700/50 mx-1 shrink-0"></div>
+              <NavItem href="/planning" icon={<BrainCircuit size={16} />} label="Planning" />
+
+              <div className="w-[1px] h-5 bg-slate-700/50 mx-2 shrink-0"></div>
+
+              {/* Group 3: System */}
               <NavItem href="/dev-tools" icon={<Settings size={16} />} label="Dev Tools" isDev />
             </div>
 
@@ -230,26 +239,25 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </Link>
 
               {/* Mobile Hamburger Menu Button */}
-              <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 xl:hidden text-slate-400 hover:text-cyan-400 transition-colors shrink-0 z-50 relative">
+              {/* 🟢 ปรับเปลี่ยนจาก xl:hidden เป็น lg:hidden ให้สอดคล้องกับเมนูตรงกลาง */}
+              <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 lg:hidden text-slate-400 hover:text-cyan-400 transition-colors shrink-0 z-50 relative">
                   {isMobileMenuOpen ? <X size={24} className="text-white"/> : <Menu size={24} />}
               </button>
 
             </div>
           </nav>
 
-          {/* --- MOBILE/TABLET DROPDOWN MENU (Responsive & Professional) --- */}
+          {/* --- MOBILE/TABLET DROPDOWN MENU --- */}
           {isMobileMenuOpen && (
               <>
-                {/* 🟢 Backdrop Overlay ป้องกันการกดด้านหลัง และคลิกเพื่อปิดได้ */}
                 <div 
-                  className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-40 xl:hidden transition-opacity"
+                  className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-40 lg:hidden transition-opacity"
                   onClick={() => setIsMobileMenuOpen(false)}
                 ></div>
 
-                {/* ตัวเมนูมือถือ */}
-                <div className="xl:hidden absolute top-full left-2 right-2 sm:left-4 sm:right-4 mt-2 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl p-4 flex flex-col gap-1.5 z-50 max-h-[75vh] overflow-y-auto custom-scrollbar">
+                <div className="lg:hidden absolute top-full left-2 right-2 sm:left-4 sm:right-4 mt-2 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl p-4 flex flex-col gap-1.5 z-50 max-h-[75vh] overflow-y-auto custom-scrollbar">
                     
-                    {/* 🟢 Search Box สำหรับมือถือ */}
+                    {/* Search Box สำหรับมือถือ */}
                     <div className="relative mb-3">
                         <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
                         <input 
@@ -261,7 +269,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                         />
                     </div>
 
-                    {/* แสดงผลการค้นหาในมือถือทันทีถ้ามีการพิมพ์ */}
                     {searchQuery.trim() !== "" ? (
                         <div className="bg-slate-800/50 rounded-xl p-2 mb-2 border border-slate-700/50">
                             {(!isSearching && searchResults.products.length === 0) ? (
@@ -279,21 +286,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                             )}
                         </div>
                     ) : (
-                        // แสดงเมนูนำทางปกติถ้าไม่ได้ค้นหา
+                        // 🟢 จัดกลุ่มเมนูในมือถือตามลำดับใหม่
                         <>
-                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-2 pb-1">Main Menu</div>
+                            <div className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest px-2 pb-1 mt-1">Core Operations</div>
                             <MobileNavItem href="/dashboard" icon={<Activity size={18}/>} label="Dashboard" onClick={() => setIsMobileMenuOpen(false)}/>
-                            <MobileNavItem href="/planning" icon={<BrainCircuit size={18}/>} label="Planning" onClick={() => setIsMobileMenuOpen(false)}/>
+                            <MobileNavItem href="/warehouse" icon={<Package size={18}/>} label="Inventory" onClick={() => setIsMobileMenuOpen(false)}/>
                             <MobileNavItem href="/inbound" icon={<PackagePlus size={18}/>} label="Inbound" onClick={() => setIsMobileMenuOpen(false)}/>
                             <MobileNavItem href="/outbound" icon={<Truck size={18}/>} label="Outbound" onClick={() => setIsMobileMenuOpen(false)}/>
-                            <MobileNavItem href="/branch-report" icon={<Store size={18}/>} label="Branch Report" onClick={() => setIsMobileMenuOpen(false)}/>
-                            <MobileNavItem href="/warehouse" icon={<Package size={18}/>} label="Inventory" onClick={() => setIsMobileMenuOpen(false)}/>
-                            <MobileNavItem href="/cycle-count" icon={<RefreshCw size={18}/>} label="Cycle Count" onClick={() => setIsMobileMenuOpen(false)}/>
-                            <MobileNavItem href="/print-labels" icon={<QrCode size={18}/>} label="Print Labels" onClick={() => setIsMobileMenuOpen(false)}/>
-                            <MobileNavItem href="/transactions" icon={<History size={18}/>} label="Logs Report" onClick={() => setIsMobileMenuOpen(false)}/>
+                            <MobileNavItem href="/transactions" icon={<History size={18}/>} label="Logs" onClick={() => setIsMobileMenuOpen(false)}/>
                             
-                            <div className="h-px bg-slate-800 my-2"></div>
-                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-2 pb-1">System</div>
+                            <div className="h-px bg-slate-800/60 my-2 mx-2"></div>
+                            
+                            <div className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest px-2 pb-1">Reports & Tools</div>
+                            <MobileNavItem href="/branch-report" icon={<Store size={18}/>} label="Branch Report" onClick={() => setIsMobileMenuOpen(false)}/>
+                            <MobileNavItem href="/cycle-count" icon={<RefreshCw size={18}/>} label="Cycle Count" onClick={() => setIsMobileMenuOpen(false)}/>
+                            <MobileNavItem href="/print-labels" icon={<QrCode size={18}/>} label="Labels" onClick={() => setIsMobileMenuOpen(false)}/>
+                            <MobileNavItem href="/planning" icon={<BrainCircuit size={18}/>} label="Planning" onClick={() => setIsMobileMenuOpen(false)}/>
+
+                            <div className="h-px bg-slate-800/60 my-2 mx-2"></div>
+
+                            <div className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest px-2 pb-1">System</div>
                             <MobileNavItem href="/settings" icon={<User size={18}/>} label="Profile Settings" onClick={() => setIsMobileMenuOpen(false)}/>
                             <MobileNavItem href="/dev-tools" icon={<Settings size={18}/>} label="Dev Tools" isDev onClick={() => setIsMobileMenuOpen(false)}/>
                         </>
@@ -310,12 +322,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </main>
 
+        {/* 🟢 เพิ่ม Style เล็กน้อยเพื่อให้ Fade ขอบของเมนูที่ Scroll ได้ (Mask Image) */}
+        <style dangerouslySetInnerHTML={{__html: `
+          .mask-image-fade {
+            mask-image: linear-gradient(to right, black 90%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to right, black 90%, transparent 100%);
+          }
+        `}} />
+
       </body>
     </html>
   );
 }
 
-// 🟢 Component สำหรับปุ่มเมนูแนวนอน (Desktop)
+// Component สำหรับปุ่มเมนูแนวนอน (Desktop)
 function NavItem({ href, icon, label, isDev = false }: { href: string, icon: React.ReactNode, label: string, isDev?: boolean }) {
   return (
     <Link href={href} className="group relative px-3 py-2 rounded-xl flex items-center gap-1.5 overflow-hidden transition-all duration-300 hover:bg-white/5 shrink-0">
@@ -329,7 +349,7 @@ function NavItem({ href, icon, label, isDev = false }: { href: string, icon: Rea
   );
 }
 
-// 🟢 Component สำหรับปุ่มเมนูแนวตั้ง (Mobile Dropdown)
+// Component สำหรับปุ่มเมนูแนวตั้ง (Mobile Dropdown)
 function MobileNavItem({ href, icon, label, isDev = false, onClick }: any) {
     return (
         <Link href={href} onClick={onClick} className={`flex items-center gap-3 p-3 rounded-xl transition-all duration-200 ${isDev ? 'text-fuchsia-400 hover:bg-fuchsia-500/10 hover:pl-4' : 'text-slate-300 hover:text-cyan-400 hover:bg-cyan-500/10 hover:pl-4'}`}>
