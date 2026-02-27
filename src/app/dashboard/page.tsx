@@ -4,7 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
 import { 
     Activity, Package, TrendingUp, AlertTriangle, 
-    ArrowRight, Clock, Box, ShoppingCart, Truck, ShieldAlert, Calendar
+    ArrowRight, Clock, Box, ShoppingCart, Truck, ShieldAlert, Calendar,
+    Zap, BarChart3, Radio, PieChart as PieChartIcon
 } from 'lucide-react';
 import { 
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, 
@@ -12,10 +13,12 @@ import {
 } from 'recharts';
 import Link from 'next/link';
 
-const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#f43f5e', '#0ea5e9', '#8b5cf6'];
+// ปรับสีให้ดูเป็นโทน Modern SaaS
+const COLORS = ['#6366f1', '#14b8a6', '#f59e0b', '#f43f5e', '#0ea5e9', '#8b5cf6'];
 
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState(new Date());
 
   // --- Filter States ---
   const [startDate, setStartDate] = useState(() => {
@@ -37,6 +40,12 @@ export default function DashboardPage() {
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [recentTx, setRecentTx] = useState<any[]>([]);
 
+  // นาฬิกา Real-time สำหรับ Command Center
+  useEffect(() => {
+      const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+      return () => clearInterval(timer);
+  }, []);
+
   useEffect(() => {
       fetchDashboardData();
   }, [startDate, endDate]);
@@ -55,7 +64,6 @@ export default function DashboardPage() {
           const lots = lotRes.data || [];
           const pendingPOs = poRes.data?.length || 0;
 
-          // คำนวณหา Low stock แจ้งเตือน
           const stockMap: Record<string, number> = {};
           lots.forEach(l => {
               stockMap[l.product_id] = (stockMap[l.product_id] || 0) + Number(l.quantity);
@@ -69,7 +77,7 @@ export default function DashboardPage() {
               }
           });
 
-          // 🟢 2. เรียกใช้ RPC เพื่อให้ Database บวกเลข KPI ให้ (แม่นยำ 100% ยอดไม่ตกหล่น และเร็วมาก)
+          // 2. เรียกใช้ RPC 
           const { data: rpcData, error: rpcError } = await supabase.rpc('get_dashboard_kpis', {
               start_date: `${startDate}T00:00:00.000Z`,
               end_date: `${endDate}T23:59:59.999Z`
@@ -80,7 +88,7 @@ export default function DashboardPage() {
           const totalInboundRPC = rpcData?.[0]?.total_inbound || 0;
           const totalOutboundRPC = rpcData?.[0]?.total_outbound || 0;
 
-          // 🟢 3. ดึง Transaction แค่ 5,000 รายการล่าสุด เพื่อเอามาวาดกราฟ Trend และตารางล่าสุด (ป้องกันเว็บค้าง)
+          // 3. ดึง Transaction
           const { data: txData } = await supabase
               .from('transactions_log')
               .select('*')
@@ -97,7 +105,7 @@ export default function DashboardPage() {
           const sDate = new Date(startDate);
           const eDate = new Date(endDate);
           const diffDays = Math.ceil((eDate.getTime() - sDate.getTime()) / (1000 * 3600 * 24));
-          const groupByMonth = diffDays > 31; // ถ้าดูเกิน 31 วัน ให้แสดงผลกราฟเป็นรายเดือน
+          const groupByMonth = diffDays > 31; 
 
           transactions.forEach(tx => {
               const pInfo = products.find(p => p.product_id === tx.product_id);
@@ -142,7 +150,6 @@ export default function DashboardPage() {
               value: catMap[cat]
           })).sort((a, b) => b.value - a.value);
 
-          // 🟢 4. นำข้อมูลลง State (ใช้ค่ายอดรวมที่ได้จาก RPC มาโชว์ในการ์ด)
           setKpi({
               totalOutbound: totalOutboundRPC,
               totalInbound: totalInboundRPC,
@@ -154,7 +161,7 @@ export default function DashboardPage() {
           setTrendData(formattedTrend);
           setLowStockItems(lowStock.sort((a, b) => b.deficit - a.deficit).slice(0, 5));
           
-          const recent = transactions.slice(0, 5).map(tx => ({
+          const recent = transactions.slice(0, 6).map(tx => ({
               ...tx,
               product_name: products.find(p => p.product_id === tx.product_id)?.product_name || 'Unknown'
           }));
@@ -169,12 +176,15 @@ export default function DashboardPage() {
   const CustomTooltip = ({ active, payload }: any) => {
       if (active && payload && payload.length) {
           return (
-              <div className="bg-white p-3 rounded-xl shadow-lg border border-slate-100 text-sm font-bold">
-                  <div className="text-slate-500 mb-1">{payload[0].name || payload[0].payload.date}</div>
+              <div className="bg-slate-900/95 backdrop-blur-md p-4 rounded-2xl shadow-2xl border border-slate-700 text-sm font-bold text-white z-50">
+                  <div className="text-slate-400 mb-2 border-b border-slate-700 pb-2">{payload[0].name || payload[0].payload.date}</div>
                   {payload.map((entry: any, index: number) => (
-                      <div key={index} style={{ color: entry.color }} className="flex justify-between gap-4">
-                          <span>{entry.name}:</span>
-                          <span>{Number(entry.value).toLocaleString()}</span>
+                      <div key={index} className="flex justify-between gap-6 items-center mb-1">
+                          <span className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></span>
+                              {entry.name}
+                          </span>
+                          <span className="text-lg font-black" style={{ color: entry.color }}>{Number(entry.value).toLocaleString()}</span>
                       </div>
                   ))}
               </div>
@@ -185,174 +195,243 @@ export default function DashboardPage() {
 
   if (loading) {
       return (
-          <div className="h-full flex flex-col items-center justify-center text-cyan-600 bg-slate-50">
-              <Activity size={48} className="animate-spin mb-4"/>
-              <span className="font-bold tracking-widest uppercase">Syncing Live Data...</span>
+          <div className="h-full flex flex-col items-center justify-center bg-slate-50 relative overflow-hidden">
+              <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-[0.03]"></div>
+              <div className="relative z-10 flex flex-col items-center">
+                  <div className="w-16 h-16 bg-white rounded-2xl shadow-2xl flex items-center justify-center mb-6 relative">
+                      <div className="absolute inset-0 bg-indigo-500 rounded-2xl animate-ping opacity-20"></div>
+                      <Zap size={32} className="text-indigo-600 animate-pulse"/>
+                  </div>
+                  <span className="font-black text-slate-800 tracking-widest uppercase text-xl">Initializing Workspace</span>
+                  <span className="text-slate-400 text-sm mt-2">Connecting to secure database...</span>
+              </div>
           </div>
       );
   }
 
   return (
-    <div className="p-4 md:p-6 h-full bg-slate-50 flex flex-col font-sans overflow-y-auto custom-scrollbar">
+    <div className="p-4 md:p-6 h-full bg-slate-50 flex flex-col font-sans overflow-y-auto custom-scrollbar relative">
       
-      {/* --- HEADER --- */}
-      <div className="flex flex-col md:flex-row justify-between md:items-center mb-6 gap-4 shrink-0">
-          <div>
-              <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2">
-                  <Activity className="text-cyan-500"/> Executive Dashboard
-              </h1>
-              <p className="text-slate-500 text-sm mt-1">ภาพรวมคลังสินค้าและการเคลื่อนไหว (กรองตามช่วงวันที่)</p>
+      {/* Background Pattern */}
+      <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-[0.02] pointer-events-none"></div>
+
+      {/* --- FLOATING HEADER (Command Center Style) --- */}
+      <div className="bg-white/80 backdrop-blur-xl border border-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] p-4 rounded-3xl mb-8 flex flex-col xl:flex-row justify-between xl:items-center gap-4 shrink-0 relative z-20">
+          <div className="flex items-center gap-4 pl-2">
+              <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-200">
+                  <Activity className="text-white w-6 h-6"/>
+              </div>
+              <div>
+                  <h1 className="text-xl md:text-2xl font-black text-slate-800 tracking-tight">WMS Command Center</h1>
+                  <div className="flex items-center gap-3 text-xs md:text-sm font-medium mt-1">
+                      <span className="flex items-center gap-1.5 text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                          <Radio size={12} className="animate-pulse"/> System Online
+                      </span>
+                      <span className="text-slate-500 font-mono flex items-center gap-1">
+                          <Clock size={12}/> {currentTime.toLocaleDateString('th-TH', { weekday: 'short', day: 'numeric', month: 'short' })} • {currentTime.toLocaleTimeString('th-TH')}
+                      </span>
+                  </div>
+              </div>
           </div>
           
-          <div className="flex items-center gap-2 bg-white p-2.5 rounded-xl shadow-sm border border-slate-200 w-full md:w-auto">
-              <Calendar size={18} className="text-indigo-500 ml-1 shrink-0"/>
-              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer w-full md:w-auto"/>
-              <span className="text-slate-400 font-bold">-</span>
-              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer w-full md:w-auto pr-1"/>
+          <div className="flex items-center gap-2 bg-slate-100/50 p-1.5 rounded-2xl border border-slate-200/60 w-full xl:w-auto">
+              <div className="flex items-center bg-white px-3 py-2 rounded-xl shadow-sm border border-slate-100 flex-1 xl:flex-none">
+                  <Calendar size={16} className="text-indigo-500 mr-2 shrink-0"/>
+                  <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer w-full xl:w-auto"/>
+              </div>
+              <span className="text-slate-300 font-black px-1">-</span>
+              <div className="flex items-center bg-white px-3 py-2 rounded-xl shadow-sm border border-slate-100 flex-1 xl:flex-none">
+                  <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer w-full xl:w-auto"/>
+              </div>
           </div>
       </div>
 
-      {/* --- KPI CARDS (🟢 ปรับให้กดคลิกเพื่อไปดูข้อมูลจริงได้) --- */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6 shrink-0">
+      {/* --- KPI CARDS (Hyper-Modern Hover Effects) --- */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8 shrink-0 relative z-10">
           
-          <Link href="/branch-report" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover:ring-2 hover:ring-blue-400 cursor-pointer transition-all">
-              <div className="absolute -right-6 -top-6 w-24 h-24 bg-blue-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+          {/* Outbound Card */}
+          <Link href="/branch-report" className="bg-white p-6 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 flex flex-col relative overflow-hidden group hover:-translate-y-1 hover:shadow-2xl hover:shadow-indigo-500/20 transition-all duration-300">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl -mr-10 -mt-10 group-hover:bg-indigo-500/20 transition-colors"></div>
               <div className="relative z-10 flex-1">
-                  <div className="flex justify-between items-start mb-2">
-                      <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center"><Truck size={20}/></div>
-                      <ArrowRight size={16} className="text-slate-300 group-hover:text-blue-500 transition-colors"/>
+                  <div className="flex justify-between items-start mb-4">
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-50 to-indigo-100 border border-indigo-100 text-indigo-600 flex items-center justify-center group-hover:scale-110 transition-transform"><Truck size={24}/></div>
+                      <div className="bg-slate-50 p-2 rounded-full text-slate-400 group-hover:bg-indigo-600 group-hover:text-white transition-colors"><ArrowRight size={16}/></div>
                   </div>
-                  <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Total Outbound (จ่ายออก)</div>
-                  <div className="text-xl md:text-2xl font-black text-slate-800 truncate">{kpi.totalOutbound.toLocaleString()} <span className="text-xs text-slate-400">หน่วย</span></div>
+                  <div className="text-slate-500 text-xs font-bold uppercase tracking-widest mb-1">Total Outbound</div>
+                  <div className="text-3xl font-black text-slate-800 flex items-baseline gap-1">
+                      {kpi.totalOutbound.toLocaleString()} <span className="text-sm font-bold text-slate-400">หน่วย</span>
+                  </div>
               </div>
           </Link>
 
-          <Link href="/transactions" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover:ring-2 hover:ring-emerald-400 cursor-pointer transition-all">
-              <div className="absolute -right-6 -top-6 w-24 h-24 bg-emerald-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+          {/* Inbound Card */}
+          <Link href="/transactions" className="bg-white p-6 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 flex flex-col relative overflow-hidden group hover:-translate-y-1 hover:shadow-2xl hover:shadow-emerald-500/20 transition-all duration-300">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-3xl -mr-10 -mt-10 group-hover:bg-emerald-500/20 transition-colors"></div>
               <div className="relative z-10 flex-1">
-                  <div className="flex justify-between items-start mb-2">
-                      <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center"><Package size={20}/></div>
-                      <ArrowRight size={16} className="text-slate-300 group-hover:text-emerald-500 transition-colors"/>
+                  <div className="flex justify-between items-start mb-4">
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-100 text-emerald-600 flex items-center justify-center group-hover:scale-110 transition-transform"><Package size={24}/></div>
+                      <div className="bg-slate-50 p-2 rounded-full text-slate-400 group-hover:bg-emerald-600 group-hover:text-white transition-colors"><ArrowRight size={16}/></div>
                   </div>
-                  <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Total Inbound (รับเข้า)</div>
-                  <div className="text-xl md:text-2xl font-black text-emerald-600">{kpi.totalInbound.toLocaleString()} <span className="text-xs text-slate-400">หน่วย</span></div>
+                  <div className="text-slate-500 text-xs font-bold uppercase tracking-widest mb-1">Total Inbound</div>
+                  <div className="text-3xl font-black text-slate-800 flex items-baseline gap-1">
+                      {kpi.totalInbound.toLocaleString()} <span className="text-sm font-bold text-slate-400">หน่วย</span>
+                  </div>
               </div>
           </Link>
 
-          <Link href="/warehouse" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover:ring-2 hover:ring-rose-400 cursor-pointer transition-all">
-              <div className="absolute -right-6 -top-6 w-24 h-24 bg-rose-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+          {/* Alert Card */}
+          <Link href="/warehouse" className="bg-white p-6 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 flex flex-col relative overflow-hidden group hover:-translate-y-1 hover:shadow-2xl hover:shadow-rose-500/20 transition-all duration-300">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/10 rounded-full blur-3xl -mr-10 -mt-10 group-hover:bg-rose-500/20 transition-colors"></div>
               <div className="relative z-10 flex-1">
-                  <div className="flex justify-between items-start mb-2">
-                      <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center"><AlertTriangle size={20}/></div>
-                      <ArrowRight size={16} className="text-slate-300 group-hover:text-rose-500 transition-colors"/>
+                  <div className="flex justify-between items-start mb-4">
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-rose-50 to-rose-100 border border-rose-100 text-rose-600 flex items-center justify-center group-hover:scale-110 transition-transform relative">
+                          {kpi.lowStockCount > 0 && <span className="absolute -top-1 -right-1 flex h-3 w-3"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span><span className="relative inline-flex rounded-full h-3 w-3 bg-rose-500"></span></span>}
+                          <ShieldAlert size={24}/>
+                      </div>
+                      <div className="bg-slate-50 p-2 rounded-full text-slate-400 group-hover:bg-rose-600 group-hover:text-white transition-colors"><ArrowRight size={16}/></div>
                   </div>
-                  <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Low Stock Alerts</div>
-                  <div className="text-xl md:text-2xl font-black text-rose-600">{kpi.lowStockCount} <span className="text-xs text-slate-400">SKUs</span></div>
+                  <div className="text-slate-500 text-xs font-bold uppercase tracking-widest mb-1">Low Stock Alert</div>
+                  <div className="text-3xl font-black text-slate-800 flex items-baseline gap-1">
+                      {kpi.lowStockCount} <span className="text-sm font-bold text-rose-500 bg-rose-50 px-2 py-0.5 rounded-lg ml-1">SKUs</span>
+                  </div>
               </div>
           </Link>
 
-          <Link href="/inbound" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover:ring-2 hover:ring-amber-400 cursor-pointer transition-all">
-              <div className="absolute -right-6 -top-6 w-24 h-24 bg-amber-50 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+          {/* PO Card */}
+          <Link href="/inbound" className="bg-white p-6 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 flex flex-col relative overflow-hidden group hover:-translate-y-1 hover:shadow-2xl hover:shadow-amber-500/20 transition-all duration-300">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 rounded-full blur-3xl -mr-10 -mt-10 group-hover:bg-amber-500/20 transition-colors"></div>
               <div className="relative z-10 flex-1">
-                  <div className="flex justify-between items-start mb-2">
-                      <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center"><Clock size={20}/></div>
-                      <ArrowRight size={16} className="text-slate-300 group-hover:text-amber-500 transition-colors"/>
+                  <div className="flex justify-between items-start mb-4">
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-50 to-amber-100 border border-amber-100 text-amber-600 flex items-center justify-center group-hover:scale-110 transition-transform"><ShoppingCart size={24}/></div>
+                      <div className="bg-slate-50 p-2 rounded-full text-slate-400 group-hover:bg-amber-500 group-hover:text-white transition-colors"><ArrowRight size={16}/></div>
                   </div>
-                  <div className="text-slate-500 text-[10px] md:text-xs font-bold uppercase tracking-wider mb-1">Pending POs</div>
-                  <div className="text-xl md:text-2xl font-black text-slate-800">{kpi.pendingPOs} <span className="text-xs text-slate-400">POs</span></div>
+                  <div className="text-slate-500 text-xs font-bold uppercase tracking-widest mb-1">Pending Orders</div>
+                  <div className="text-3xl font-black text-slate-800 flex items-baseline gap-1">
+                      {kpi.pendingPOs} <span className="text-sm font-bold text-slate-400">POs</span>
+                  </div>
               </div>
           </Link>
       </div>
 
-      {/* --- CHARTS SECTION --- */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6 shrink-0">
+      {/* --- CHARTS SECTION (Beautiful Recharts) --- */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8 shrink-0">
           
-          {/* Trend Bar Chart */}
-          <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border border-slate-200 lg:col-span-2">
-              <h2 className="text-sm md:text-base font-bold text-slate-800 mb-6 flex items-center gap-2">
-                  <TrendingUp className="text-indigo-500 w-5 h-5"/> ความเคลื่อนไหว รับเข้า-จ่ายออก
-              </h2>
-              <div className="w-full h-64 md:h-72">
+          {/* Main Trend Chart */}
+          <div className="bg-white p-6 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 xl:col-span-2 flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                      <BarChart3 className="text-indigo-500 w-5 h-5"/> Inventory Movement Trend
+                  </h2>
+                  <span className="text-xs font-bold text-slate-400 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">Daily / Monthly View</span>
+              </div>
+              <div className="w-full flex-1 min-h-[300px]">
                   {trendData.length === 0 ? (
-                      <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">ไม่พบข้อมูลความเคลื่อนไหว</div>
+                      <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 text-sm"><BarChart3 size={32} className="opacity-20 mb-2"/> No movement data found</div>
                   ) : (
                       <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
-                              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b', fontWeight: 600}} dy={10}/>
-                              <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}}/>
-                              <RechartsTooltip content={<CustomTooltip />} />
+                          <BarChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }} barGap={2}>
+                              <defs>
+                                  <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="5%" stopColor="#14b8a6" stopOpacity={1}/>
+                                      <stop offset="95%" stopColor="#14b8a6" stopOpacity={0.4}/>
+                                  </linearGradient>
+                                  <linearGradient id="colorOut" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="5%" stopColor="#6366f1" stopOpacity={1}/>
+                                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0.4}/>
+                                  </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
+                              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#64748b', fontWeight: 600}} dy={10}/>
+                              <YAxis axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#64748b'}}/>
+                              <RechartsTooltip content={<CustomTooltip />} cursor={{fill: '#f8fafc'}} />
                               <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: '12px', fontWeight: 'bold' }}/>
-                              <Bar dataKey="รับเข้า" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={40} />
-                              <Bar dataKey="จ่ายออก" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                              <Bar dataKey="รับเข้า" fill="url(#colorIn)" radius={[6, 6, 0, 0]} maxBarSize={30} />
+                              <Bar dataKey="จ่ายออก" fill="url(#colorOut)" radius={[6, 6, 0, 0]} maxBarSize={30} />
                           </BarChart>
                       </ResponsiveContainer>
                   )}
               </div>
           </div>
 
-          {/* Category Pie Chart */}
-          <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col">
-              <h2 className="text-sm md:text-base font-bold text-slate-800 mb-2 flex items-center gap-2">
-                  <Box className="text-cyan-500 w-5 h-5"/> สัดส่วนการจ่ายออกตามหมวดหมู่
+          {/* Category Donut Chart */}
+          <div className="bg-white p-6 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 flex flex-col">
+              <h2 className="text-lg font-black text-slate-800 mb-2 flex items-center gap-2">
+                  <Box className="text-rose-500 w-5 h-5"/> Outbound by Category
               </h2>
-              <div className="w-full flex-1 min-h-[200px]">
+              <div className="text-xs text-slate-400 mb-4 border-b border-slate-100 pb-2">สัดส่วนการเบิกจ่ายแยกตามหมวดหมู่สินค้า</div>
+              <div className="w-full flex-1 min-h-[250px] relative">
                   {categoryData.length === 0 ? (
-                      <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">ไม่พบข้อมูลการจ่ายออก</div>
+                      <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 text-sm"><PieChartIcon size={32} className="opacity-20 mb-2"/> No category data</div>
                   ) : (
-                      <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                              <Pie
-                                  data={categoryData}
-                                  cx="50%" cy="50%"
-                                  innerRadius={60} outerRadius={90}
-                                  paddingAngle={5} dataKey="value"
-                              >
-                                  {categoryData.map((entry, index) => (
-                                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                  ))}
-                              </Pie>
-                              <RechartsTooltip content={<CustomTooltip />} />
-                              <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '10px', paddingTop: '10px' }}/>
-                          </PieChart>
-                      </ResponsiveContainer>
+                      <>
+                          {/* Inner Circle Label */}
+                          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none mt-[-20px]">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total</span>
+                              <span className="text-xl font-black text-slate-800">{kpi.totalOutbound.toLocaleString()}</span>
+                          </div>
+                          <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                  <Pie
+                                      data={categoryData}
+                                      cx="50%" cy="45%"
+                                      innerRadius={70} outerRadius={100}
+                                      paddingAngle={3} dataKey="value"
+                                      stroke="none"
+                                  >
+                                      {categoryData.map((entry, index) => (
+                                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                      ))}
+                                  </Pie>
+                                  <RechartsTooltip content={<CustomTooltip />} />
+                                  <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', fontWeight: 600, color: '#475569' }}/>
+                              </PieChart>
+                          </ResponsiveContainer>
+                      </>
                   )}
               </div>
           </div>
       </div>
 
-      {/* --- TABLES SECTION --- */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 shrink-0 pb-6">
+      {/* --- TABLES SECTION (Clean & Actionable) --- */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pb-6 shrink-0">
           
-          {/* Low Stock Table */}
-          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-rose-50/50">
-                  <h2 className="font-bold text-rose-700 flex items-center gap-2"><ShieldAlert size={18}/> ต้องสั่งซื้อด่วน (Low Stock)</h2>
-                  <Link href="/warehouse" className="text-xs font-bold text-rose-600 hover:underline">ดูทั้งหมด</Link>
+          {/* Action List: Low Stock */}
+          <div className="bg-white rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden flex flex-col">
+              <div className="p-5 flex justify-between items-center bg-white border-b border-slate-100">
+                  <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center"><AlertTriangle size={18}/></div>
+                      <div>
+                          <h2 className="font-bold text-slate-800 text-base">Action Required: Low Stock</h2>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">รายการที่ต้องสั่งซื้อด่วน</p>
+                      </div>
+                  </div>
+                  <Link href="/warehouse" className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">View All</Link>
               </div>
-              <div className="overflow-x-auto">
+              <div className="p-2">
                   <table className="w-full text-left text-sm whitespace-nowrap">
-                      <thead className="bg-slate-50 text-slate-500 font-bold text-[10px] uppercase">
+                      <thead className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                           <tr>
-                              <th className="p-3 pl-5">Product Info</th>
+                              <th className="p-3 pl-4">Product / SKU</th>
                               <th className="p-3 text-center">Current</th>
-                              <th className="p-3 text-center">Min</th>
-                              <th className="p-3 text-right pr-5">Deficit</th>
+                              <th className="p-3 text-center">Minimum</th>
+                              <th className="p-3 text-right pr-4">Status</th>
                           </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100">
+                      <tbody className="divide-y divide-slate-50">
                           {lowStockItems.length === 0 ? (
-                              <tr><td colSpan={4} className="p-8 text-center text-slate-400 text-sm">สต๊อกปลอดภัยทุกรายการ 🎉</td></tr>
+                              <tr><td colSpan={4} className="p-10 text-center text-slate-400 font-medium">✨ All stock levels are healthy!</td></tr>
                           ) : lowStockItems.map(item => (
-                              <tr key={item.product_id} className="hover:bg-slate-50">
-                                  <td className="p-3 pl-5">
-                                      <div className="font-bold text-slate-800 text-xs truncate max-w-[150px]">{item.product_name}</div>
-                                      <div className="text-[10px] text-slate-500 font-mono">{item.product_id}</div>
+                              <tr key={item.product_id} className="hover:bg-slate-50/50 transition-colors group">
+                                  <td className="p-3 pl-4">
+                                      <div className="font-bold text-slate-800 text-sm truncate max-w-[200px]">{item.product_name}</div>
+                                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">{item.product_id}</div>
                                   </td>
-                                  <td className="p-3 text-center font-bold text-rose-600 bg-rose-50/30">{item.current_stock}</td>
-                                  <td className="p-3 text-center text-slate-500 font-mono">{item.min_stock}</td>
-                                  <td className="p-3 text-right pr-5 text-rose-600 font-black flex justify-end items-center gap-1">
-                                      -{item.deficit} <span className="text-[10px] text-rose-400 font-normal">{item.base_uom}</span>
+                                  <td className="p-3 text-center font-black text-rose-600 text-lg">{item.current_stock}</td>
+                                  <td className="p-3 text-center text-slate-500 font-medium">{item.min_stock}</td>
+                                  <td className="p-3 text-right pr-4">
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-100 px-2 py-1 rounded-md border border-rose-200">
+                                          Deficit -{item.deficit}
+                                      </span>
                                   </td>
                               </tr>
                           ))}
@@ -361,43 +440,52 @@ export default function DashboardPage() {
               </div>
           </div>
 
-          {/* Recent Transactions Table */}
-          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-indigo-50/50">
-                  <h2 className="font-bold text-indigo-700 flex items-center gap-2"><Clock size={18}/> ความเคลื่อนไหวล่าสุด</h2>
-                  <Link href="/transactions" className="text-xs font-bold text-indigo-600 hover:underline">ดูประวัติทั้งหมด</Link>
+          {/* Live Feed: Recent Transactions */}
+          <div className="bg-white rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden flex flex-col">
+              <div className="p-5 flex justify-between items-center bg-white border-b border-slate-100">
+                  <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center relative">
+                          <span className="absolute top-0 right-0 flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-indigo-500"></span></span>
+                          <Activity size={18}/>
+                      </div>
+                      <div>
+                          <h2 className="font-bold text-slate-800 text-base">Live Activity Feed</h2>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ความเคลื่อนไหวล่าสุดในระบบ</p>
+                      </div>
+                  </div>
+                  <Link href="/transactions" className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">View History</Link>
               </div>
-              <div className="overflow-x-auto">
+              <div className="p-2">
                   <table className="w-full text-left text-sm whitespace-nowrap">
-                      <thead className="bg-slate-50 text-slate-500 font-bold text-[10px] uppercase">
+                      <thead className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                           <tr>
-                              <th className="p-3 pl-5">Time</th>
-                              <th className="p-3">Type</th>
-                              <th className="p-3">Product Info</th>
-                              <th className="p-3 text-right pr-5">Qty</th>
+                              <th className="p-3 pl-4 w-28">Timestamp</th>
+                              <th className="p-3 w-24 text-center">Event</th>
+                              <th className="p-3">Product</th>
+                              <th className="p-3 text-right pr-4">Volume</th>
                           </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100">
+                      <tbody className="divide-y divide-slate-50">
                           {recentTx.length === 0 ? (
-                              <tr><td colSpan={4} className="p-8 text-center text-slate-400 text-sm">ยังไม่มีความเคลื่อนไหว</td></tr>
+                              <tr><td colSpan={4} className="p-10 text-center text-slate-400 font-medium">📭 No recent activity</td></tr>
                           ) : recentTx.map((tx, idx) => {
                               const isOut = tx.transaction_type === 'OUTBOUND';
                               const isAdj = tx.transaction_type === 'ADJUST';
                               return (
-                                  <tr key={idx} className="hover:bg-slate-50">
-                                      <td className="p-3 pl-5">
-                                          <div className="text-[10px] font-bold text-slate-600">{new Date(tx.transaction_date).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'})}</div>
-                                          <div className="text-[9px] text-slate-400">{new Date(tx.transaction_date).toLocaleDateString('th-TH', {day:'2-digit', month:'short'})}</div>
+                                  <tr key={idx} className="hover:bg-slate-50/50 transition-colors group">
+                                      <td className="p-3 pl-4">
+                                          <div className="text-xs font-bold text-slate-700">{new Date(tx.transaction_date).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'})}</div>
+                                          <div className="text-[9px] text-slate-400 mt-0.5 font-medium">{new Date(tx.transaction_date).toLocaleDateString('th-TH', {day:'2-digit', month:'short', year:'numeric'})}</div>
                                       </td>
-                                      <td className="p-3">
-                                          <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase ${isOut ? 'bg-rose-100 text-rose-600' : isAdj ? 'bg-amber-100 text-amber-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                                      <td className="p-3 text-center">
+                                          <span className={`text-[9px] font-black px-2 py-1 rounded-md uppercase tracking-wider ${isOut ? 'bg-indigo-50 text-indigo-600 border border-indigo-100' : isAdj ? 'bg-amber-50 text-amber-600 border border-amber-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'}`}>
                                               {tx.transaction_type}
                                           </span>
                                       </td>
                                       <td className="p-3">
-                                          <div className="font-bold text-slate-800 text-xs truncate max-w-[120px]">{tx.product_name}</div>
+                                          <div className="font-bold text-slate-800 text-sm truncate max-w-[180px]">{tx.product_name}</div>
                                       </td>
-                                      <td className={`p-3 text-right pr-5 font-black ${isOut || tx.quantity_change < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                      <td className={`p-3 text-right pr-4 font-black text-base ${isOut || tx.quantity_change < 0 ? 'text-indigo-600' : 'text-emerald-600'}`}>
                                           {tx.quantity_change > 0 ? '+' : ''}{tx.quantity_change}
                                       </td>
                                   </tr>
