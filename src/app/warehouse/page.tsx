@@ -7,6 +7,9 @@ import { Search, UploadCloud, Layers, ArrowUpDown, RefreshCw, Download, ChevronL
 import * as XLSX from 'xlsx';
 
 export default function Inventory() {
+  // --- 🛡️ ROLE SECURITY STATE ---
+  const [userRole, setUserRole] = useState<string>('VIEWER');
+
   const [inventory, setInventory] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
 
@@ -43,8 +46,19 @@ export default function Inventory() {
   const [historyLoading, setHistoryLoading] = useState(false);
 
   useEffect(() => {
+    // 🟢 ดึง Role ของผู้ใช้ปัจจุบัน
+    const fetchRole = async () => {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+            const { data } = await supabase.from('user_roles').select('role').eq('user_id', session.user.id).single();
+            setUserRole(data?.role || 'VIEWER');
+        }
+    };
+    fetchRole();
     fetchData();
   }, [calcPeriod]);
+
+  const isViewer = userRole === 'VIEWER';
 
   // 🟢 1. FETCH DATA (อิงตาม Schema)
   const fetchData = async () => {
@@ -148,6 +162,7 @@ export default function Inventory() {
   };
 
   const handleSaveAdjust = async () => {
+      if (isViewer) return alert('ไม่มีสิทธิ์เข้าถึงการแก้ไข');
       if (!adjustItem) return;
       const newQty = parseInt(adjustQty);
       if (isNaN(newQty) || newQty < 0) return alert("Please enter a valid positive number");
@@ -162,23 +177,23 @@ export default function Inventory() {
       setIsAdjusting(false);
   };
 
-  // 🟢 3. SECURE BULK ADJUST (Export Template -> Import -> Preview -> Confirm)
+  // 🟢 3. SECURE BULK ADJUST
   const handleExportAdjustTemplate = () => {
       const exportData = sortedData.map(item => ({
           'รหัสสินค้า (Product ID)': item.product_id,
           'ชื่อสินค้า (Product Name)': item.product_name,
           'ยอดสต๊อกปัจจุบัน (Current Qty)': item.current_qty,
-          'ยอดสต๊อกใหม่ (New Qty)': '', // ว่างไว้ให้ User กรอก
+          'ยอดสต๊อกใหม่ (New Qty)': '', 
           'เหตุผลการปรับยอด (Reason)': 'Audit Check'
       }));
       const ws = XLSX.utils.json_to_sheet(exportData);
-      // ใส่สีหรือล็อค Column ไม่ได้ผ่าน xlsx ธรรมดา แต่จัดฟอร์แมตให้ดูง่ายได้
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Adjust_Template");
       XLSX.writeFile(wb, `Stock_Adjust_Template_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   const handleImportBulkAdjust = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (isViewer) return alert('ไม่มีสิทธิ์เข้าถึงการแก้ไข');
       const file = e.target.files?.[0];
       if (!file) return;
       const reader = new FileReader();
@@ -216,12 +231,13 @@ export default function Inventory() {
                   alert("ไม่พบรายการที่ต้องปรับปรุง (ยอดอาจตรงอยู่แล้ว หรือรูปแบบไฟล์/คอลัมน์ไม่ถูกต้อง)");
               }
           } catch (err: any) { alert("Error reading file: " + err.message); }
-          e.target.value = ''; // Reset input
+          e.target.value = ''; 
       };
       reader.readAsArrayBuffer(file);
   };
 
   const handleConfirmBulkAdjust = async () => {
+      if (isViewer) return;
       setIsBulkSaving(true);
       try {
           for (const item of bulkPreviewData) {
@@ -275,6 +291,7 @@ export default function Inventory() {
   };
 
   const handleToggleArchive = async (e: React.MouseEvent, item: any) => {
+      if (isViewer) return;
       e.stopPropagation();
       const newStatus = !item.is_hidden;
       if (!window.confirm(newStatus ? `ซ่อนสินค้า "${item.product_name}"?` : `แสดงสินค้า "${item.product_name}"?`)) return;
@@ -335,16 +352,18 @@ export default function Inventory() {
                 {showArchived ? <><Eye size={14}/> View Active</> : <><Archive size={14}/> View Hidden</>}
             </button>
             
-            {/* 🟢 Secure Bulk Adjust Tools */}
-            <div className="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 shadow-sm text-xs font-bold overflow-hidden">
-                <button onClick={handleExportAdjustTemplate} className="px-3 py-1 hover:bg-blue-50 text-blue-600 flex items-center gap-1 border-r border-slate-200 transition-colors" title="โหลดแบบฟอร์ม Excel">
-                    <FileSpreadsheet size={14}/> Template
-                </button>
-                <label className="px-3 py-1 hover:bg-amber-50 text-amber-600 flex items-center gap-1 cursor-pointer transition-colors" title="อัปโหลดไฟล์ Excel เพื่อปรับสต๊อก">
-                    <UploadCloud size={14}/> Bulk Adjust
-                    <input type="file" accept=".xlsx, .csv" className="hidden" onChange={handleImportBulkAdjust} />
-                </label>
-            </div>
+            {/* 🛡️ ซ่อนปุ่มปรับสต๊อกทั้งหมดสำหรับ VIEWER */}
+            {!isViewer && (
+                <div className="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 shadow-sm text-xs font-bold overflow-hidden">
+                    <button onClick={handleExportAdjustTemplate} className="px-3 py-1 hover:bg-blue-50 text-blue-600 flex items-center gap-1 border-r border-slate-200 transition-colors" title="โหลดแบบฟอร์ม Excel">
+                        <FileSpreadsheet size={14}/> Template
+                    </button>
+                    <label className="px-3 py-1 hover:bg-amber-50 text-amber-600 flex items-center gap-1 cursor-pointer transition-colors" title="อัปโหลดไฟล์ Excel เพื่อปรับสต๊อก">
+                        <UploadCloud size={14}/> Bulk Adjust
+                        <input type="file" accept=".xlsx, .csv" className="hidden" onChange={handleImportBulkAdjust} />
+                    </label>
+                </div>
+            )}
 
             <button onClick={handleExportReport} className="flex items-center gap-2 bg-emerald-600 text-white px-3 py-1.5 rounded-lg font-bold shadow hover:bg-emerald-700 text-xs transition-colors">
                 <Download size={14}/> Export
@@ -463,15 +482,22 @@ export default function Inventory() {
                                 </td>
                                 <td className="p-3 text-center text-xs font-mono text-slate-500 max-w-[100px] truncate" title={item.location}>{item.location}</td>
                                 <td className="p-3 text-center flex justify-center gap-1">
+                                    {/* History Button (Allowed for Viewer) */}
                                     <button onClick={() => handleOpenStockCard(item)} className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 hover:text-cyan-600 transition-colors" title="Stock History">
                                         <History size={14}/>
                                     </button>
-                                    <button onClick={() => setAdjustItem(item)} className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 hover:text-amber-500 transition-colors" title="Adjust Stock">
-                                        <Edit2 size={14}/>
-                                    </button>
-                                    <button onClick={(e) => handleToggleArchive(e, item)} className={`p-1.5 rounded-full transition-colors ${item.is_hidden ? 'text-cyan-500 hover:bg-cyan-100' : 'text-slate-400 hover:bg-slate-200 hover:text-rose-500'}`} title={item.is_hidden ? "Unhide" : "Hide"}>
-                                        {item.is_hidden ? <Eye size={14}/> : <EyeOff size={14}/>}
-                                    </button>
+                                    
+                                    {/* 🛡️ Edit / Hide Buttons (Hidden for Viewer) */}
+                                    {!isViewer && (
+                                        <>
+                                            <button onClick={() => setAdjustItem(item)} className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 hover:text-amber-500 transition-colors" title="Adjust Stock">
+                                                <Edit2 size={14}/>
+                                            </button>
+                                            <button onClick={(e) => handleToggleArchive(e, item)} className={`p-1.5 rounded-full transition-colors ${item.is_hidden ? 'text-cyan-500 hover:bg-cyan-100' : 'text-slate-400 hover:bg-slate-200 hover:text-rose-500'}`} title={item.is_hidden ? "Unhide" : "Hide"}>
+                                                {item.is_hidden ? <Eye size={14}/> : <EyeOff size={14}/>}
+                                            </button>
+                                        </>
+                                    )}
                                 </td>
                             </tr>
                         );
@@ -497,7 +523,7 @@ export default function Inventory() {
       </div>
 
       {/* --- SINGLE ADJUST MODAL --- */}
-      {adjustItem && (
+      {adjustItem && !isViewer && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
                   <div className="p-4 bg-slate-50 border-b flex justify-between items-center">
@@ -530,7 +556,7 @@ export default function Inventory() {
       )}
 
       {/* --- BULK ADJUST PREVIEW MODAL (SECURE) --- */}
-      {isBulkPreviewOpen && (
+      {isBulkPreviewOpen && !isViewer && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden">
                   <div className="p-5 bg-amber-50 border-b border-amber-200 flex justify-between items-center">

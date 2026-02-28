@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabaseClient'; 
-import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History } from 'lucide-react';
+import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History, AlertTriangle, Printer } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface FormDataState {
@@ -15,6 +15,9 @@ interface FormDataState {
 }
 
 const Inbound = () => {
+  // --- ROLE SECURITY STATE ---
+  const [userRole, setUserRole] = useState<string>('VIEWER');
+  
   // --- STATE ---
   const [activeTab, setActiveTab] = useState<string>('po');
   const [listTab, setListTab] = useState<string>('PENDING'); 
@@ -50,6 +53,15 @@ const Inbound = () => {
 
   // --- INIT ---
   useEffect(() => {
+    const fetchRole = async () => {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+            const { data } = await supabase.from('user_roles').select('role').eq('user_id', session.user.id).single();
+            setUserRole(data?.role || 'VIEWER');
+        }
+    };
+    fetchRole();
+
     setFormData((prev: FormDataState) => ({ ...prev, docNo: `RCV-${Date.now()}` }));
     fetchMasterData();
 
@@ -61,6 +73,8 @@ const Inbound = () => {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  const isViewer = userRole === 'VIEWER';
 
   useEffect(() => {
     if (vendors.length > 0) fetchPendingPOs();
@@ -186,7 +200,6 @@ const Inbound = () => {
     event.target.value = '';
   };
 
-  // --- 🟢 EXPORT REPORT FUNCTION ---
   const handleExportPending = async () => {
     if (!exportStart || !exportEnd) return alert("กรุณาเลือกวันที่ให้ครบถ้วน");
     setLoading(true);
@@ -211,8 +224,6 @@ const Inbound = () => {
 
             for (const line of po.po_lines || []) {
                 const pendingQty = (line.ordered_qty || 0) - (line.received_qty || 0);
-                
-                // ดึงเฉพาะรายการที่ยังค้างส่งอยู่จริงๆ
                 if (pendingQty > 0) {
                     const product = products.find(p => p.product_id === line.product_id);
                     exportData.push({
@@ -251,6 +262,24 @@ const Inbound = () => {
     setLoading(false);
   };
 
+  const checkCrossDockAndSetCart = async (newCartItems: any[]) => {
+      setCart(newCartItems); 
+      try {
+          const pIds = newCartItems.map(i => i.productId);
+          if (pIds.length === 0) return;
+          
+          const { data: outLines } = await supabase.from('outbound_lines').select('rm_code').in('rm_code', pIds);
+          const crossDockIds = outLines?.map((l: any) => l.rm_code) || [];
+          
+          if (crossDockIds.length > 0) {
+              setCart(prev => prev.map(item => ({
+                  ...item,
+                  isCrossDock: crossDockIds.includes(item.productId)
+              })));
+          }
+      } catch (e) { console.error(e); }
+  };
+
   const selectPO = (po: any) => {
     setSelectedPO(po);
     setVendorSearchInput('');
@@ -274,20 +303,23 @@ const Inbound = () => {
     const safeItems = po.po_lines || [];
     const pendingItems = safeItems.filter((item: any) => ((item.ordered_qty || 0) - (item.received_qty || 0)) > 0);
 
-    setCart(pendingItems.map((item: any) => {
+    const mappedItems = pendingItems.map((item: any) => {
         const productInfo = products.find(p => p.product_id === item.product_id);
         const remainingQty = (item.ordered_qty || 0) - (item.received_qty || 0);
         return createCartItem(item.product_id, productInfo?.product_name, remainingQty, productInfo);
-    }));
+    });
+
+    checkCrossDockAndSetCart(mappedItems);
   };
 
   const handleForceClose = async () => {
     if (!selectedPO) return;
-    if (!window.confirm(`Force Close PO: ${selectedPO.po_number}?`)) return;
+    if (!window.confirm(`คุณแน่ใจหรือไม่ที่จะ "ปิดเอกสาร" PO: ${selectedPO.po_number}?\n\n(ระบบจะเปลี่ยนสถานะเป็น COMPLETED และจะไม่แสดงในหน้ารอรับสินค้าอีก)`)) return;
+    
     setLoading(true);
     try {
         await supabase.from('purchase_orders').update({ status: 'COMPLETED' }).eq('po_number', selectedPO.po_number);
-        alert("✅ PO Closed!");
+        alert("✅ ปิดรายการ PO สำเร็จ!");
         setSelectedPO(null); setCart([]); fetchPendingPOs();
     } catch (error: any) { alert("Error: " + error.message); }
     setLoading(false);
@@ -324,19 +356,23 @@ const Inbound = () => {
         expDate: '', 
         productTemp: '',
         location: smartLocation, 
-        isAutoLocation: !!productInfo?.default_location
+        isAutoLocation: !!productInfo?.default_location,
+        lotStatus: 'AVAILABLE',
+        isCrossDock: false
       };
   };
 
   const addToCart = (product: any) => {
+    if (isViewer) return;
     const existing = cart.find((i: any) => i.productId === product.product_id);
     if (existing) return alert("Item already in list!");
     const newItem = createCartItem(product.product_id, product.product_name, 0, product);
     newItem.qtyReceived = 1; 
-    setCart([...cart, newItem]);
+    checkCrossDockAndSetCart([...cart, newItem]);
   };
 
   const updateItem = (index: number, field: string, value: any) => {
+    if (isViewer) return;
     const newCart = [...cart];
     (newCart[index] as any)[field] = value;
     if(field === 'location') newCart[index].isAutoLocation = false;
@@ -349,16 +385,22 @@ const Inbound = () => {
   ).slice(0, 10);
 
   // ==========================================
-  // SUBMIT INBOUND (อิงตาม New Schema + Metadata QC)
+  // SUBMIT INBOUND
   // ==========================================
   const handleSubmit = async () => {
+    if (isViewer) return alert("ไม่มีสิทธิ์ทำรายการ (View Only)");
     if (cart.length === 0) return alert("No items.");
     if (!formData.vendorId && activeTab === 'manual') return alert("Select Vendor.");
-    if (!window.confirm("Confirm Inbound?")) return;
+    
+    const hasOverReceive = cart.some(item => parseFloat(item.qtyReceived) > parseFloat(item.qtyOrdered) && parseFloat(item.qtyOrdered) > 0);
+    if (hasOverReceive) {
+        if (!window.confirm("⚠️ แจ้งเตือน: มีรายการที่รับเข้า 'เกิน' กว่าจำนวนสั่งซื้อ (Over-receive) คุณต้องการยืนยันการรับเข้านี้หรือไม่?")) return;
+    } else {
+        if (!window.confirm("ยืนยันการรับเข้าสินค้า (Confirm Inbound)?")) return;
+    }
 
     setLoading(true);
     try {
-        // 1. สร้าง Inbound Receipt
         const { data: receiptData, error: receiptError } = await supabase
             .from('inbound_receipts')
             .insert([{
@@ -373,7 +415,6 @@ const Inbound = () => {
         if (receiptError) throw receiptError;
         const newReceiptId = receiptData.receipt_id;
 
-        // 2. ลูปจัดการรายการ
         for (const item of cart) {
             const rcvQty = parseFloat(item.qtyReceived) || 0;
             const convRate = parseFloat(item.conversionRate) || 1;
@@ -382,7 +423,6 @@ const Inbound = () => {
             const safeMfgDate = item.mfgDate || new Date().toISOString().split('T')[0];
             const safeExpDate = item.expDate || new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString().split('T')[0];
 
-            // 2.1 บันทึก Inbound Lines
             await supabase.from('inbound_lines').insert([{
                 receipt_id: newReceiptId,
                 product_id: item.productId,
@@ -396,12 +436,12 @@ const Inbound = () => {
                 base_qty: baseQty
             }]);
 
-            // 2.2 จัดการ Inventory Lots
             const { data: existingLots } = await supabase.from('inventory_lots').select('*')
                 .eq('product_id', item.productId)
                 .eq('storage_location', item.location)
                 .eq('mfg_date', safeMfgDate)
-                .eq('exp_date', safeExpDate);
+                .eq('exp_date', safeExpDate)
+                .eq('status', item.lotStatus);
 
             if (existingLots && existingLots.length > 0) {
                 const lot = existingLots[0];
@@ -415,14 +455,13 @@ const Inbound = () => {
                     storage_location: item.location,
                     quantity: baseQty,
                     mfg_date: safeMfgDate,
-                    exp_date: safeExpDate
+                    exp_date: safeExpDate,
+                    status: item.lotStatus
                 }]);
             }
 
-            // 2.3 คำนวณ Balance และบันทึก Transaction Log + 🟢 ส่ง Metadata QC ไปด้วย
             const { data: allLots } = await supabase.from('inventory_lots').select('quantity').eq('product_id', item.productId);
             const balanceAfter = allLots?.reduce((sum, l) => sum + Number(l.quantity), 0) || 0;
-
             const baseOrderedQty = item.qtyOrdered ? (parseFloat(item.qtyOrdered) * convRate) : 0;
             
             let thaiTimingStatus = 'ตรงเวลา';
@@ -434,7 +473,7 @@ const Inbound = () => {
                 product_id: item.productId,
                 quantity_change: baseQty,
                 balance_after: balanceAfter,
-                remarks: `รับเข้า (Inbound) ตามเอกสาร ${formData.docNo}`,
+                remarks: `รับเข้า (Inbound) ตามเอกสาร ${formData.docNo} [QC: ${item.lotStatus}]`,
                 metadata: {
                     scheduled_date: activeTab === 'po' && selectedPO ? selectedPO.delivery_date : null,
                     time_status: thaiTimingStatus,
@@ -444,15 +483,13 @@ const Inbound = () => {
                 }
             }]);
 
-            // 2.4 Update Default Location (Auto-Learn)
-            if (!item.isAutoLocation) {
+            if (!item.isAutoLocation && !isViewer) {
                 await supabase.from('master_products')
                     .update({ default_location: item.location })
                     .eq('product_id', item.productId);
             }
         }
 
-        // 3. อัปเดต PO Status
         if (activeTab === 'po' && selectedPO) {
             let isAllComplete = true;
 
@@ -477,7 +514,10 @@ const Inbound = () => {
             await supabase.from('purchase_orders').update({ status: newStatus }).eq('po_number', selectedPO.po_number);
         }
 
-        alert("🎉 Inbound Success! (ระบบรับเข้าและส่งข้อมูล QC ไปยังหน้ารายงานเรียบร้อย)");
+        if (window.confirm("🎉 รับเข้าสำเร็จ!\n\nต้องการไปที่หน้า [Print Labels] เพื่อพิมพ์บาร์โค้ดสำหรับสินค้าล็อตนี้เลยหรือไม่?")) {
+            window.location.href = '/print-labels';
+        }
+
         setCart([]); setSelectedPO(null);
         setFormData((prev: FormDataState) => ({...prev, docNo: `RCV-${Date.now()}`, truckTemp: '', vendorId: '', vendorName: '', refPO: ''}));
         setVendorSearchInput('');
@@ -502,15 +542,20 @@ const Inbound = () => {
         <div className="w-96 bg-white border-r border-slate-200 flex flex-col">
             {activeTab === 'po' ? (
                 <>
-                    {/* 🟢 อัปเดตเมนู Import / Export ให้อยู่รวมกันอย่างเป็นระเบียบ */}
                     <div className="p-4 bg-blue-50 border-b border-blue-100 flex flex-col gap-2">
-                        <label className="flex items-center justify-center gap-2 w-full bg-white border border-dashed border-blue-400 text-blue-600 p-2.5 rounded-lg cursor-pointer hover:bg-blue-50 transition-colors shadow-sm">
-                            <FileUp size={18}/> <span className="font-bold text-sm">Import PO (Excel)</span>
-                            <input type="file" accept=".xlsx, .xls, .csv" className="hidden" onChange={handleImportPO}/>
-                        </label>
-                        <button onClick={() => setShowExportModal(true)} className="flex items-center justify-center gap-2 w-full bg-orange-50 border border-orange-300 text-orange-600 p-2.5 rounded-lg hover:bg-orange-100 transition-colors shadow-sm font-bold text-sm">
-                            <FileDown size={18}/> Export ค้างส่ง (Pending)
-                        </button>
+                        {!isViewer ? (
+                          <>
+                            <label className="flex items-center justify-center gap-2 w-full bg-white border border-dashed border-blue-400 text-blue-600 p-2.5 rounded-lg cursor-pointer hover:bg-blue-50 transition-colors shadow-sm">
+                                <FileUp size={18}/> <span className="font-bold text-sm">Import PO (Excel)</span>
+                                <input type="file" accept=".xlsx, .xls, .csv" className="hidden" onChange={handleImportPO}/>
+                            </label>
+                            <button onClick={() => setShowExportModal(true)} className="flex items-center justify-center gap-2 w-full bg-orange-50 border border-orange-300 text-orange-600 p-2.5 rounded-lg hover:bg-orange-100 transition-colors shadow-sm font-bold text-sm">
+                                <FileDown size={18}/> Export ค้างส่ง (Pending)
+                            </button>
+                          </>
+                        ) : (
+                          <div className="text-xs text-center text-slate-400 font-bold p-2 bg-slate-100 rounded-lg">🔒 ไม่มีสิทธิ์จัดการข้อมูล PO</div>
+                        )}
                     </div>
                     
                     <div className="grid grid-cols-2 border-b border-slate-200 bg-slate-50">
@@ -564,18 +609,18 @@ const Inbound = () => {
                         <div className="relative">
                             <User className="absolute left-3 top-2.5 text-slate-400" size={18}/>
                             <input 
-                                type="text" placeholder="Type Vendor Name..." 
-                                className="w-full pl-10 p-2.5 border rounded shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                type="text" placeholder="Type Vendor Name..." disabled={isViewer}
+                                className="w-full pl-10 p-2.5 border rounded shadow-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100"
                                 value={vendorSearchInput}
                                 onChange={(e: any) => {
                                     setVendorSearchInput(e.target.value);
                                     setShowVendorDropdown(true);
                                 }}
-                                onFocus={() => setShowVendorDropdown(true)}
+                                onFocus={() => {if(!isViewer) setShowVendorDropdown(true)}}
                             />
-                            {vendorSearchInput && <button onClick={() => {setVendorSearchInput(''); setFormData((prev: FormDataState) => ({...prev, vendorId:'', vendorName:''}));}} className="absolute right-3 top-2.5 text-slate-400 hover:text-red-500"><X size={16}/></button>}
+                            {vendorSearchInput && !isViewer && <button onClick={() => {setVendorSearchInput(''); setFormData((prev: FormDataState) => ({...prev, vendorId:'', vendorName:''}));}} className="absolute right-3 top-2.5 text-slate-400 hover:text-red-500"><X size={16}/></button>}
                         </div>
-                        {showVendorDropdown && (
+                        {showVendorDropdown && !isViewer && (
                             <div className="absolute z-50 w-full bg-white border border-slate-200 rounded shadow-xl mt-1 max-h-60 overflow-y-auto">
                                 {filteredVendorList.length > 0 ? filteredVendorList.map((v: any) => (
                                     <div key={v.vendor_id} onMouseDown={(e: any) => { e.preventDefault(); handleVendorSelect(v); }} className="p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0">
@@ -587,16 +632,16 @@ const Inbound = () => {
                         )}
                     </div>
                     
-                    <div className="mb-2"><input type="text" placeholder="Search Product..." className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none" value={productSearchTerm} onChange={(e: any) => setProductSearchTerm(e.target.value)}/></div>
+                    <div className="mb-2"><input type="text" placeholder="Search Product..." disabled={isViewer} className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100" value={productSearchTerm} onChange={(e: any) => setProductSearchTerm(e.target.value)}/></div>
                     <div className="flex-1 overflow-auto border rounded bg-white">
                         {filteredProducts.map((p: any) => (
-                            <div key={p.product_id} onMouseDown={(e: any) => { e.preventDefault(); addToCart(p); }} className="p-3 border-b hover:bg-blue-50 cursor-pointer flex justify-between items-center group">
+                            <div key={p.product_id} onMouseDown={(e: any) => { e.preventDefault(); addToCart(p); }} className={`p-3 border-b flex justify-between items-center group ${isViewer ? 'opacity-50' : 'hover:bg-blue-50 cursor-pointer'}`}>
                                 <div>
                                     <div className="font-bold text-sm">{p.product_id}</div>
                                     <div className="text-xs text-slate-500">{p.product_name}</div>
                                 </div>
                                 {p.category && <span className="text-[10px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded border border-purple-100">{p.category}</span>}
-                                <Plus size={16} className="text-slate-400 group-hover:text-blue-600"/>
+                                {!isViewer && <Plus size={16} className="text-slate-400 group-hover:text-blue-600"/>}
                             </div>
                         ))}
                     </div>
@@ -614,8 +659,8 @@ const Inbound = () => {
                         <label className="text-[10px] uppercase font-bold text-slate-400">PO Number</label>
                         <input 
                             type="text" 
-                            className="w-full font-bold text-sm border-none focus:ring-0 p-0 text-slate-800 placeholder-slate-300 bg-transparent outline-none"
-                            placeholder="Type PO Number..."
+                            className="w-full font-bold text-sm border-none focus:ring-0 p-0 text-slate-800 placeholder-slate-300 bg-transparent outline-none disabled:bg-transparent"
+                            placeholder="Type PO Number..." disabled={isViewer}
                             value={formData.refPO} 
                             readOnly={activeTab === 'po'}
                             onChange={(e: any) => setFormData((prev: FormDataState) => ({...prev, refPO: e.target.value}))}
@@ -629,11 +674,17 @@ const Inbound = () => {
 
                     <div className="col-span-1 border-r border-slate-100"><label className="text-[10px] uppercase font-bold text-slate-400">Timing</label><div className={`font-bold text-sm ${deliveryTiming === 'LATE' ? 'text-red-500' : 'text-green-600'}`}>{deliveryTiming || '-'}</div></div>
                     
-                    <div className="col-span-1"><label className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1"><Thermometer size={12}/> Truck Temp (°C)</label><input type="number" className="w-full border border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none" value={formData.truckTemp} onChange={(e: any) => setFormData((prev: FormDataState) => ({...prev, truckTemp: e.target.value}))}/></div>
+                    <div className="col-span-1"><label className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1"><Thermometer size={12}/> Truck Temp (°C)</label><input type="number" disabled={isViewer} className="w-full border border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100" value={formData.truckTemp} onChange={(e: any) => setFormData((prev: FormDataState) => ({...prev, truckTemp: e.target.value}))}/></div>
                  </div>
                  
-                 {activeTab === 'po' && selectedPO && listTab === 'PARTIAL' && (
-                     <button onClick={handleForceClose} className="ml-4 bg-red-50 text-red-600 border border-red-200 px-3 py-2 rounded-lg text-xs font-bold flex flex-col items-center hover:bg-red-100 transition-colors" title="Close this PO manually"><Archive size={16}/><span>End PO</span></button>
+                 {activeTab === 'po' && selectedPO && !isViewer && (
+                     <button 
+                        onClick={handleForceClose} 
+                        className="ml-4 bg-rose-50 text-rose-600 border border-rose-200 px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-rose-100 hover:text-rose-700 transition-colors shadow-sm whitespace-nowrap" 
+                        title="ปิดเอกสาร PO นี้ทันที (ไม่ต้องรับของเพิ่มแล้ว)"
+                     >
+                        <Archive size={16}/> ปิด PO (Force Close)
+                     </button>
                  )}
             </div>
 
@@ -643,44 +694,61 @@ const Inbound = () => {
                         <thead className="bg-slate-50 text-slate-600 font-bold uppercase text-xs border-b">
                             <tr>
                                 <th className="p-3 w-40">Product</th>
-                                <th className="p-3 w-20 text-center">Remaining</th>
-                                <th className="p-3 w-24 text-center bg-yellow-50 text-yellow-800 border-x border-yellow-100">Receive Qty</th>
-                                <th className="p-3 w-56 bg-blue-50 text-blue-800 border-x border-blue-100">Conversion</th>
-                                <th className="p-3 w-20">Item Temp</th>
-                                <th className="p-3 w-32">MFG / EXP *</th>
-                                <th className="p-3 w-28">Location</th>
-                                <th className="p-3 w-10"></th>
+                                <th className="p-3 w-16 text-center">Rem.</th>
+                                <th className="p-3 w-20 text-center bg-yellow-50 text-yellow-800 border-x border-yellow-100">Receive Qty</th>
+                                <th className="p-3 w-48 bg-blue-50 text-blue-800 border-x border-blue-100">Conversion</th>
+                                <th className="p-3 w-16 text-center">Temp</th>
+                                <th className="p-3 w-28">QC Status</th>
+                                <th className="p-3 w-28">MFG / EXP *</th>
+                                <th className="p-3 w-24">Location</th>
+                                {!isViewer ? <th className="p-3 w-10"></th> : null}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                             {cart.length === 0 ? (
-                                <tr><td colSpan={8} className="p-12 text-center text-slate-400 flex flex-col items-center justify-center h-64"><Package size={48} className="opacity-20 mb-4"/><p className="text-lg font-medium">{activeTab === 'po' ? 'Select a PO from the left list.' : 'Select Vendor & Add items.'}</p></td></tr>
+                                <tr><td colSpan={9} className="p-12 text-center text-slate-400 flex flex-col items-center justify-center h-64"><Package size={48} className="opacity-20 mb-4"/><p className="text-lg font-medium">{activeTab === 'po' ? 'Select a PO from the left list.' : 'Select Vendor & Add items.'}</p></td></tr>
                             ) : cart.map((item: any, idx: number) => (
                                 <tr key={idx} className="hover:bg-slate-50 align-top transition-colors">
                                     <td className="p-3">
-                                        <div className="font-bold text-slate-700">{item.productId}</div>
+                                        <div className="font-bold text-slate-700 flex items-center gap-2">
+                                            {item.productId}
+                                            {item.isCrossDock && <span className="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200 font-black animate-pulse flex items-center gap-1"><AlertTriangle size={10}/> CROSS-DOCK</span>}
+                                        </div>
                                         <div className="text-xs text-slate-500 truncate w-32" title={item.productName}>{item.productName}</div>
                                     </td>
                                     <td className="p-3 text-center pt-4 text-slate-400 font-mono">{item.qtyOrdered}</td>
-                                    <td className="p-3 text-center bg-yellow-50 border-x border-yellow-100"><input type="number" className="w-full p-2 border border-yellow-300 rounded text-center font-bold text-slate-800 focus:ring-2 focus:ring-yellow-500 outline-none" value={item.qtyReceived} onChange={(e: any) => updateItem(idx, 'qtyReceived', e.target.value)}/></td>
-                                    <td className="p-3 bg-blue-50/30 border-x border-blue-100">
-                                        <div className="flex items-center gap-2 mb-2"><input type="text" placeholder="Unit" className="w-16 p-1 border rounded text-xs bg-white text-center shadow-sm" value={item.recvUnit} onChange={(e: any) => updateItem(idx, 'recvUnit', e.target.value)} /><span className="text-xs text-slate-400">x</span><input type="number" placeholder="Rate" className="w-14 p-1 border rounded text-xs text-center bg-white shadow-sm" value={item.conversionRate} onChange={(e: any) => updateItem(idx, 'conversionRate', e.target.value)} /></div>
-                                        <div className="flex items-center gap-2 bg-blue-100 px-2 py-1.5 rounded border border-blue-200 shadow-sm group hover:ring-1 hover:ring-blue-400 cursor-text"><Box size={14} className="text-blue-500"/><div className="text-sm font-black text-blue-700">{(parseFloat(item.qtyReceived)||0) * (parseFloat(item.conversionRate)||1)}</div><div className="text-xs font-bold text-blue-600 uppercase">{item.baseUnit}</div></div>
+                                    <td className="p-3 text-center bg-yellow-50 border-x border-yellow-100">
+                                        <input type="number" disabled={isViewer} className="w-full p-2 border border-yellow-300 rounded text-center font-bold text-slate-800 focus:ring-2 focus:ring-yellow-500 outline-none disabled:bg-slate-100" value={item.qtyReceived} onChange={(e: any) => updateItem(idx, 'qtyReceived', e.target.value)}/>
                                     </td>
-                                    <td className="p-3"><input type="number" placeholder="°C" className="w-full p-2 border rounded text-center focus:ring-1 focus:ring-blue-300 outline-none" value={item.productTemp} onChange={(e: any) => updateItem(idx, 'productTemp', e.target.value)}/></td>
+                                    <td className="p-3 bg-blue-50/30 border-x border-blue-100">
+                                        <div className="flex items-center gap-2 mb-2"><input type="text" disabled={isViewer} placeholder="Unit" className="w-16 p-1 border rounded text-xs bg-white text-center shadow-sm disabled:bg-slate-100" value={item.recvUnit} onChange={(e: any) => updateItem(idx, 'recvUnit', e.target.value)} /><span className="text-xs text-slate-400">x</span><input type="number" disabled={isViewer} placeholder="Rate" className="w-14 p-1 border rounded text-xs text-center bg-white shadow-sm disabled:bg-slate-100" value={item.conversionRate} onChange={(e: any) => updateItem(idx, 'conversionRate', e.target.value)} /></div>
+                                        <div className="flex items-center gap-2 bg-blue-100 px-2 py-1.5 rounded border border-blue-200 shadow-sm"><Box size={14} className="text-blue-500"/><div className="text-sm font-black text-blue-700">{(parseFloat(item.qtyReceived)||0) * (parseFloat(item.conversionRate)||1)}</div><div className="text-xs font-bold text-blue-600 uppercase">{item.baseUnit}</div></div>
+                                    </td>
+                                    <td className="p-3"><input type="number" disabled={isViewer} placeholder="°C" className="w-full p-2 border rounded text-center focus:ring-1 focus:ring-blue-300 outline-none disabled:bg-slate-100" value={item.productTemp} onChange={(e: any) => updateItem(idx, 'productTemp', e.target.value)}/></td>
+                                    
+                                    <td className="p-3">
+                                        <select 
+                                            disabled={isViewer}
+                                            className={`w-full p-2 border rounded text-[10px] font-bold outline-none cursor-pointer ${item.lotStatus === 'HOLD' ? 'bg-rose-50 text-rose-700 border-rose-200 ring-1 ring-rose-400' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} disabled:cursor-not-allowed`}
+                                            value={item.lotStatus}
+                                            onChange={(e: any) => updateItem(idx, 'lotStatus', e.target.value)}
+                                        >
+                                            <option value="AVAILABLE">✅ สมบูรณ์ (AVAILABLE)</option>
+                                            <option value="HOLD">⚠️ กักกัน (QC HOLD)</option>
+                                        </select>
+                                    </td>
+
                                     <td className="p-3 space-y-1">
-                                        <label className="text-[9px] text-slate-400 uppercase">MFG</label>
-                                        <input type="date" required className="w-full p-1 border border-slate-300 rounded text-xs text-slate-500 outline-none mb-1 focus:border-blue-500" value={item.mfgDate} onChange={(e: any) => updateItem(idx, 'mfgDate', e.target.value)} />
-                                        <label className="text-[9px] text-slate-400 uppercase">EXP</label>
-                                        <input type="date" className="w-full p-1 border border-slate-300 rounded text-xs text-red-400 outline-none focus:border-red-500" value={item.expDate} onChange={(e: any) => updateItem(idx, 'expDate', e.target.value)} />
+                                        <input type="date" disabled={isViewer} className="w-full p-1 border border-slate-300 rounded text-xs text-slate-500 outline-none mb-1 focus:border-blue-500 disabled:bg-slate-100" value={item.mfgDate} onChange={(e: any) => updateItem(idx, 'mfgDate', e.target.value)} title="MFG" />
+                                        <input type="date" disabled={isViewer} className="w-full p-1 border border-slate-300 rounded text-xs text-red-400 outline-none focus:border-red-500 disabled:bg-slate-100" value={item.expDate} onChange={(e: any) => updateItem(idx, 'expDate', e.target.value)} title="EXP"/>
                                     </td>
                                     <td className="p-3">
-                                        <div className="flex items-center gap-1 border rounded p-1 bg-white focus-within:ring-1 focus-within:ring-blue-300 relative">
+                                        <div className={`flex items-center gap-1 border rounded p-1 focus-within:ring-1 focus-within:ring-blue-300 relative ${isViewer ? 'bg-slate-100' : 'bg-white'}`}>
                                             {item.isAutoLocation ? <History size={12} className="text-blue-500"/> : <MapPin size={12} className="text-slate-400"/>}
-                                            <input type="text" className="w-full text-xs outline-none" value={item.location} onChange={(e: any) => updateItem(idx, 'location', e.target.value)} />
+                                            <input type="text" disabled={isViewer} className="w-full text-xs outline-none bg-transparent" value={item.location} onChange={(e: any) => updateItem(idx, 'location', e.target.value)} />
                                         </div>
                                     </td>
-                                    <td className="p-3 text-center pt-4"><button onClick={() => setCart(cart.filter((_,i)=>i!==idx))} className="text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button></td>
+                                    {!isViewer ? <td className="p-3 text-center pt-4"><button onClick={() => setCart(cart.filter((_,i)=>i!==idx))} className="text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button></td> : null}
                                 </tr>
                             ))}
                         </tbody>
@@ -690,12 +758,14 @@ const Inbound = () => {
 
             <div className="bg-white p-4 border-t border-slate-200 flex justify-between items-center z-10 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
                 <div className="text-sm text-slate-500 flex gap-4"><span>SKUs: <span className="font-bold text-slate-800">{cart.length}</span></span><span>Total Base Qty: <span className="font-bold text-blue-600">{cart.reduce((a: number, b: any) => a + ((parseFloat(b.qtyReceived)||0)*(parseFloat(b.conversionRate)||1)), 0)}</span></span></div>
-                <button onClick={handleSubmit} disabled={loading || cart.length === 0} className={`px-8 py-3 rounded-lg text-white font-bold shadow-lg flex items-center gap-2 transition-all transform active:scale-95 ${loading ? 'bg-slate-300' : 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 shadow-blue-200'}`}>{loading ? 'Processing...' : <><CheckCircle size={20}/> Confirm Inbound</>}</button>
+                
+                {!isViewer && (
+                  <button onClick={handleSubmit} disabled={loading || cart.length === 0} className={`px-8 py-3 rounded-lg text-white font-bold shadow-lg flex items-center gap-2 transition-all transform active:scale-95 ${loading ? 'bg-slate-300' : 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 shadow-blue-200'}`}>{loading ? 'Processing...' : <><CheckCircle size={20}/> Confirm Inbound</>}</button>
+                )}
             </div>
         </div>
       </div>
 
-      {/* 🟢 MODAL สำหรับเลือกวันที่ Export รายงานค้างส่ง */}
       {showExportModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden flex flex-col">

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "next-upgrade": {
+      "source": "vercel-labs/next-skills",
+      "sourceType": "github",
+      "computedHash": "082ce8a4aaad096baa8e38f90a4221b0ae0015a70649e4e6c647cc5da4e59dcd"
+    }
+  }
+}

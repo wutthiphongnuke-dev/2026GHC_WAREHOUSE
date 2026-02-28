@@ -4,7 +4,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../supabaseClient';
 import { 
     Edit2, Trash2, Plus, Save, X, Upload, Package, Users, Home, Search, 
-    Download, ChevronLeft, ChevronRight, DollarSign, Database, MapPin, Tag, Terminal, Activity 
+    Download, ChevronLeft, ChevronRight, DollarSign, Database, MapPin, Tag, Terminal, Activity,
+    FileSpreadsheet, Info
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -23,7 +24,7 @@ export default function DevToolsPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 50;
 
-  // --- CONFIG: TABS & COLUMNS (อิงจาก Database Schema ของคุณ) ---
+  // --- CONFIG: TABS & COLUMNS ---
   const tabs = [
       { 
           id: 'master_products', label: 'Product Master', icon: Package, color: 'text-cyan-500', bg: 'bg-cyan-500/10', border: 'border-cyan-500/20',
@@ -33,8 +34,8 @@ export default function DevToolsPage() {
               { key: 'product_name', label: 'Product Name' },
               { key: 'category', label: 'Category' },
               { key: 'base_uom', label: 'Base Unit' },
-              { key: 'conversion_rate', label: 'Conv.' },
-              { key: 'standard_cost', label: 'Cost' },
+              { key: 'default_location', label: 'Location' }, // 🟢 เพิ่ม Location ให้เห็นในตาราง
+              { key: 'min_stock', label: 'Min Stock' },       // 🟢 เพิ่ม Min Stock
               { key: 'status', label: 'Status' }
           ]
       },
@@ -66,7 +67,6 @@ export default function DevToolsPage() {
       if (error) throw error;
       
       const pk = currentTabConfig?.pk || 'id';
-      // Sort by ID
       const sortedItems = (items || []).sort((a,b) => (a[pk] || '').localeCompare(b[pk] || ''));
       setData(sortedItems);
     } catch (error: any) { 
@@ -77,14 +77,44 @@ export default function DevToolsPage() {
   };
 
   // ==========================================
-  // 📥 IMPORT / 📤 EXPORT (Excel to Supabase)
+  // 📥 IMPORT / 📤 EXPORT & TEMPLATE
   // ==========================================
+  
+  // 🟢 ฟังก์ชันโหลด Template ตัวอย่าง
+  const handleDownloadTemplate = () => {
+      let templateData = {};
+      
+      if (activeTab === 'master_products') {
+          templateData = {
+              product_id: 'P-001',
+              product_name: 'ตัวอย่าง สินค้า ก.',
+              category: 'Raw Material',
+              base_uom: 'Piece',
+              purchase_uom: 'Box',
+              conversion_rate: 10,
+              standard_cost: 150.50,
+              default_location: 'MAIN_WH',
+              min_stock: 50,
+              status: 'ACTIVE'
+          };
+      } else if (activeTab === 'master_vendors') {
+          templateData = { vendor_id: 'V-001', vendor_name: 'บริษัท ตัวอย่าง จำกัด' };
+      } else if (activeTab === 'master_branches') {
+          templateData = { branch_id: 'B-001', branch_name: 'สาขาหลัก', is_active: 'TRUE' };
+      }
+
+      const ws = XLSX.utils.json_to_sheet([templateData]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Template");
+      XLSX.writeFile(wb, `${activeTab}_Template.xlsx`);
+  };
+
   const handleFileUpload = (event: any) => {
     const file = event.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async (e: any) => {
-        if (!window.confirm(`ยืนยันการนำเข้าข้อมูล Excel สู่ตาราง ${activeTab}?\n(ระบบจะ Upsert: ข้อมูลเดิมจะถูกอัปเดต ข้อมูลใหม่จะถูกเพิ่ม)`)) return;
+        if (!window.confirm(`ยืนยันการนำเข้าข้อมูล Excel สู่ตาราง ${activeTab}?\n\n💡 ระบบรองรับ Bulk Edit: ถ้ารหัสเดิมมีอยู่แล้ว ระบบจะอัปเดตข้อมูลให้ ถ้ารหัสใหม่จะถูกเพิ่มเข้าไป`)) return;
         setLoading(true);
         try {
             const buffer = new Uint8Array(e.target.result);
@@ -94,29 +124,29 @@ export default function DevToolsPage() {
             const pk = currentTabConfig?.pk || 'id';
             const cleanRows = rows.map(row => {
                 const cleanRow = { ...row };
-                // Type Casting
+                // Type Casting ให้ถูกต้องก่อนส่งเข้า DB
                 if(cleanRow.standard_cost) cleanRow.standard_cost = parseFloat(cleanRow.standard_cost);
                 if(cleanRow.conversion_rate) cleanRow.conversion_rate = parseFloat(cleanRow.conversion_rate);
                 if(cleanRow.min_stock) cleanRow.min_stock = parseInt(cleanRow.min_stock);
                 
-                // ถ้าระบุว่า True/False ให้แปลงเป็น Boolean (สำหรับ Branch)
                 if(cleanRow.is_active === 'TRUE' || cleanRow.is_active === 'true' || cleanRow.is_active === true) cleanRow.is_active = true;
                 if(cleanRow.is_active === 'FALSE' || cleanRow.is_active === 'false' || cleanRow.is_active === false) cleanRow.is_active = false;
 
                 return cleanRow;
-            }).filter(row => row[pk]); // ต้องมี Primary Key
+            }).filter(row => row[pk]); // บังคับว่าต้องมีคอลัมน์ Primary Key
 
             if (cleanRows.length > 0) {
+                // Upsert จะทำการ Update ถ้ามี ID อยู่แล้ว และ Insert ถ้าเป็น ID ใหม่
                 const { error } = await supabase.from(activeTab).upsert(cleanRows, { onConflict: pk });
                 if (error) throw error;
-                alert(`✅ อัปเดตข้อมูล ${cleanRows.length} รายการสำเร็จ!`); 
+                alert(`✅ นำเข้าและอัปเดตข้อมูล ${cleanRows.length} รายการสำเร็จ!`); 
                 fetchData();
             }
         } catch (error: any) { alert("Import Error: " + error.message); }
         setLoading(false);
     };
     reader.readAsArrayBuffer(file);
-    event.target.value = null;
+    event.target.value = null; // รีเซ็ต input file
   };
 
   const handleExport = () => {
@@ -183,7 +213,6 @@ export default function DevToolsPage() {
 
   const totalPages = Math.ceil(filteredData.length / itemsPerPage);
   const currentItems = filteredData.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
-  const TabIcon = currentTabConfig?.icon;
 
   return (
     <div className="flex flex-col h-full bg-slate-50 font-sans">
@@ -223,6 +252,15 @@ export default function DevToolsPage() {
 
           {/* MAIN CONTENT */}
           <div className="flex-1 p-6 flex flex-col overflow-hidden bg-slate-100">
+              
+              {/* 🟢 Bulk Edit Info Banner */}
+              <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-2xl mb-4 flex items-start gap-3 shadow-sm shrink-0">
+                  <Info className="text-blue-500 shrink-0 mt-0.5" size={18}/>
+                  <div className="text-sm">
+                      <strong className="font-bold">แก้ไขข้อมูล (Bulk Edit):</strong> คุณสามารถกดปุ่ม <span className="font-bold bg-white px-1.5 py-0.5 rounded border border-blue-200 text-xs">Export</span> เพื่อนำข้อมูลทั้งหมดไปแก้ไข (เช่น แก้ Location หรือ UOM) ใน Excel จากนั้นกดปุ่ม <span className="font-bold bg-white px-1.5 py-0.5 rounded border border-blue-200 text-xs">Import</span> นำไฟล์ที่แก้แล้วกลับเข้ามา ระบบจะอัปเดตข้อมูลทับของเดิมให้ทันทีโดยอัตโนมัติ!
+                  </div>
+              </div>
+
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col flex-1 overflow-hidden relative">
                   
                   {/* Table Toolbar */}
@@ -232,11 +270,17 @@ export default function DevToolsPage() {
                           <input type="text" placeholder={`Search in ${currentTabConfig?.label}...`} className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-xl text-sm bg-white focus:ring-2 focus:ring-cyan-500 outline-none shadow-inner"
                               value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
                       </div>
-                      <div className="flex gap-2">
+                      
+                      <div className="flex gap-2 flex-wrap">
+                          {/* 🟢 ปุ่มโหลด Template */}
+                          <button onClick={handleDownloadTemplate} className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl font-bold hover:bg-emerald-100 text-sm shadow-sm transition-colors">
+                              <FileSpreadsheet size={16}/> Template
+                          </button>
+                          
                           <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-xl text-slate-600 font-bold hover:bg-slate-100 text-sm shadow-sm transition-colors">
                               <Download size={16}/> Export
                           </button>
-                          <label className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-xl text-slate-600 font-bold hover:bg-slate-100 text-sm cursor-pointer shadow-sm transition-colors">
+                          <label className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-xl font-bold hover:bg-black text-sm cursor-pointer shadow-md transition-all">
                               <Upload size={16}/> Import
                               <input type="file" accept=".xlsx, .csv" className="hidden" onChange={handleFileUpload}/>
                           </label>
@@ -247,9 +291,9 @@ export default function DevToolsPage() {
                   </div>
 
                   {/* Data Table */}
-                  <div className="flex-1 overflow-auto bg-white">
+                  <div className="flex-1 overflow-auto bg-white custom-scrollbar">
                       <table className="w-full text-left text-sm whitespace-nowrap">
-                          <thead className="bg-slate-100/80 text-slate-500 font-bold uppercase text-xs sticky top-0 backdrop-blur-md z-10 shadow-sm border-b border-slate-200">
+                          <thead className="bg-slate-100/80 text-slate-500 font-bold uppercase text-[10px] tracking-wider sticky top-0 backdrop-blur-md z-10 shadow-sm border-b border-slate-200">
                               <tr>
                                   <th className="p-4 w-10 text-center">#</th>
                                   {currentTabConfig?.columns.map(col => <th key={col.key} className="p-4">{col.label}</th>)}
@@ -271,6 +315,14 @@ export default function DevToolsPage() {
                                                 )
                                                 : col.key === 'is_active' ? (
                                                     <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${item[col.key] ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{item[col.key] ? 'TRUE' : 'FALSE'}</span>
+                                                )
+                                                : col.key === 'default_location' ? (
+                                                    <span className={`text-[10px] font-black px-2 py-1 rounded uppercase tracking-wider ${item[col.key] ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-400'}`}>
+                                                        <MapPin size={10} className="inline mr-1 mb-0.5"/>{item[col.key] || 'ไม่ระบุ'}
+                                                    </span>
+                                                )
+                                                : col.key === 'min_stock' ? (
+                                                    <span className="font-mono text-slate-500 font-bold">{item[col.key] || 0}</span>
                                                 )
                                                 : <span className={col.key.includes('id') ? 'font-mono text-xs font-bold text-cyan-700' : ''}>{item[col.key] || '-'}</span>
                                               }
@@ -324,7 +376,7 @@ export default function DevToolsPage() {
                         
                         <div className="grid grid-cols-2 gap-4">
                             <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><Tag size={12}/> Category</label><input name="category" defaultValue={currentItem?.category} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="e.g. Raw Material"/></div>
-                            <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><MapPin size={12}/> Default Location</label><input name="default_location" defaultValue={currentItem?.default_location} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="e.g. WH-A1"/></div>
+                            <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><MapPin size={12}/> Default Location</label><input name="default_location" defaultValue={currentItem?.default_location} className="w-full p-2.5 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl font-bold uppercase text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. MAIN_WH"/></div>
                         </div>
 
                         <div className="bg-cyan-50/50 p-4 rounded-xl border border-cyan-100">
@@ -372,7 +424,7 @@ export default function DevToolsPage() {
                 <div className="pt-4 border-t border-slate-100 flex gap-3">
                     <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors">Cancel</button>
                     <button type="submit" disabled={saveLoading} className={`flex-1 py-3 rounded-xl text-white font-bold flex justify-center items-center gap-2 shadow-lg transition-all ${activeTab==='master_products' ? 'bg-cyan-600 hover:bg-cyan-700 shadow-cyan-200' : activeTab==='master_vendors' ? 'bg-fuchsia-600 hover:bg-fuchsia-700 shadow-fuchsia-200' : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'} disabled:opacity-50`}>
-                        {saveLoading ? 'Saving Database...' : <><Save size={18}/> Save to Supabase</>}
+                        {saveLoading ? 'Saving...' : <><Save size={18}/> Save Data</>}
                     </button>
                 </div>
             </form>
