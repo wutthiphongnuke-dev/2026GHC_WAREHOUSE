@@ -78,13 +78,19 @@ export default function Inventory() {
             if (lot.storage_location) invMap[lot.product_id].locations.add(lot.storage_location);
         });
 
+        // 1. ปรับเวลาให้เริ่มที่ 00:00:00 ของวันที่ต้องการ เพื่อให้ได้ข้อมูลเต็มวัน
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - calcPeriod);
+        startDate.setHours(0, 0, 0, 0); 
         
-        const { data: transData } = await supabase
+        // 2. เพิ่ม .limit(100000) เพื่อปลดล็อคข้อจำกัด 1,000 บรรทัดของ Supabase
+        const { data: transData, error: transErr } = await supabase
             .from('transactions_log')
             .select('product_id, transaction_type, quantity_change')
-            .gte('transaction_date', startDate.toISOString());
+            .gte('transaction_date', startDate.toISOString())
+            .limit(100000); 
+
+        if (transErr) console.error("Error fetching transactions:", transErr);
             
         const transList = transData || [];
         
