@@ -2,11 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { supabase } from '../../../supabaseClient';
+import { supabase } from '../../../supabaseClient'; // ⚠️ เช็ค Path ของ Supabase ให้ตรงกับโฟลเดอร์ของคุณ
 import { 
     Package, MapPin, Tag, Box, ArrowLeft, History, 
-    TrendingUp, TrendingDown, Activity, AlertTriangle, Calendar
+    TrendingUp, TrendingDown, Activity, AlertTriangle, Calendar,
+    Download, Store // 🟢 เพิ่ม Icon ที่ต้องใช้
 } from 'lucide-react';
+import * as XLSX from 'xlsx'; // 🟢 เพิ่ม Import สำหรับ Export Excel
 
 export default function ProductDetailPage() {
     const params = useParams();
@@ -34,7 +36,7 @@ export default function ProductDetailPage() {
             // 2. ดึงข้อมูล Lot / สถานที่จัดเก็บ (Inventory Lots)
             const { data: lotsData } = await supabase.from('inventory_lots').select('*').eq('product_id', prodData.product_id).gt('quantity', 0);
             setLots(lotsData || []);
-            setTotalStock((lotsData || []).reduce((acc, lot) => acc + Number(lot.quantity), 0));
+            setTotalStock((lotsData || []).reduce((acc: number, lot: any) => acc + Number(lot.quantity), 0));
 
             // 3. ดึงประวัติการเคลื่อนไหว (Transactions)
             const { data: txData } = await supabase.from('transactions_log')
@@ -48,6 +50,30 @@ export default function ProductDetailPage() {
             router.push('/warehouse');
         }
         setLoading(false);
+    };
+
+    // 🟢 ฟังก์ชัน Export ประวัติการทำรายการ (Transaction History)
+    const handleExportHistory = () => {
+        if (transactions.length === 0) return alert("ไม่มีข้อมูลประวัติให้ Export");
+
+        const exportData = transactions.map((tx, index) => {
+            const dateObj = new Date(tx.transaction_date);
+            return {
+                "ลำดับ": index + 1,
+                "วันที่ (Date)": dateObj.toLocaleDateString('th-TH'),
+                "เวลา (Time)": dateObj.toLocaleTimeString('th-TH'),
+                "ประเภท (Type)": tx.transaction_type,
+                "สาขาปลายทาง (Branch)": tx.branch_id || tx.metadata?.branch_name || '-', // ดึงชื่อสาขา
+                "ยอดความเคลื่อนไหว (Change)": Number(tx.quantity_change),
+                "ยอดคงเหลือ (Balance)": Number(tx.balance_after),
+                "หมายเหตุ (Remarks)": tx.remarks || '-'
+            };
+        });
+
+        const ws = XLSX.utils.json_to_sheet(exportData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Transaction_History");
+        XLSX.writeFile(wb, `History_${product.product_id}_${new Date().toISOString().split('T')[0]}.xlsx`);
     };
 
     if (loading) return <div className="flex h-full items-center justify-center text-cyan-500 font-bold animate-pulse"><Activity size={32} className="mr-2 animate-spin"/> Loading Item Data...</div>;
@@ -93,7 +119,7 @@ export default function ProductDetailPage() {
                         <MapPin size={18} className="text-indigo-500"/>
                         <h2 className="font-bold text-slate-700">Storage Locations (Lots)</h2>
                     </div>
-                    <div className="flex-1 overflow-auto p-4 space-y-3">
+                    <div className="flex-1 overflow-auto p-4 space-y-3 custom-scrollbar">
                         {lots.length === 0 ? (
                             <div className="text-center text-slate-400 py-10 text-sm">ไม่มีสต๊อกคงเหลือในระบบ</div>
                         ) : lots.map(lot => (
@@ -118,16 +144,23 @@ export default function ProductDetailPage() {
                         <div className="flex items-center gap-2">
                             <History size={18} className="text-cyan-500"/>
                             <h2 className="font-bold text-slate-700">Transaction History</h2>
+                            <span className="text-xs font-medium text-slate-400 ml-2 bg-slate-200 px-2 py-0.5 rounded-full">100 รายการล่าสุด</span>
                         </div>
-                        <span className="text-xs text-slate-400">100 รายการล่าสุด</span>
+                        {/* 🟢 ปุ่ม Export History */}
+                        <button 
+                            onClick={handleExportHistory}
+                            className="flex items-center gap-1.5 bg-white border border-slate-300 text-slate-600 hover:text-cyan-600 hover:border-cyan-300 hover:bg-cyan-50 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm"
+                        >
+                            <Download size={14}/> Export
+                        </button>
                     </div>
-                    <div className="flex-1 overflow-auto">
+                    <div className="flex-1 overflow-auto custom-scrollbar">
                         <table className="w-full text-left text-sm whitespace-nowrap">
                             <thead className="bg-slate-100/50 text-slate-500 font-bold uppercase text-[10px] sticky top-0 backdrop-blur-sm shadow-sm z-10">
                                 <tr>
                                     <th className="p-3 pl-4">Date & Time</th>
-                                    <th className="p-3">Ref ID</th>
                                     <th className="p-3 text-center">Type</th>
+                                    <th className="p-3">Branch (สาขา)</th> {/* 🟢 เปลี่ยนจาก Ref ID เป็น Branch */}
                                     <th className="p-3 text-right">Change</th>
                                     <th className="p-3 text-right">Balance</th>
                                     <th className="p-3">Remarks</th>
@@ -142,17 +175,26 @@ export default function ProductDetailPage() {
                                             <div className="font-bold text-slate-700">{new Date(tx.transaction_date).toLocaleDateString('th-TH')}</div>
                                             <div className="text-[10px] text-slate-400 mt-0.5">{new Date(tx.transaction_date).toLocaleTimeString('th-TH')}</div>
                                         </td>
-                                        <td className="p-3 font-mono text-[10px] text-slate-400 truncate max-w-[100px]" title={tx.reference_id || tx.transaction_id}>
-                                            {tx.reference_id?.split('-')[0] || tx.transaction_id?.split('-')[0]}
-                                        </td>
                                         <td className="p-3 text-center">
                                             <span className={`text-[9px] font-black px-2 py-1 rounded-md uppercase tracking-wider ${
-                                                tx.transaction_type === 'INBOUND' ? 'bg-emerald-100 text-emerald-700' :
-                                                tx.transaction_type === 'OUTBOUND' ? 'bg-rose-100 text-rose-700' :
-                                                'bg-orange-100 text-orange-700'
+                                                tx.transaction_type === 'INBOUND' || tx.transaction_type === 'RECEIPT' || tx.transaction_type === 'IN' ? 'bg-emerald-100 text-emerald-700' :
+                                                tx.transaction_type === 'OUTBOUND' || tx.transaction_type === 'TRANSFER' || tx.transaction_type === 'OUT' ? 'bg-rose-100 text-rose-700' :
+                                                'bg-amber-100 text-amber-700'
                                             }`}>
                                                 {tx.transaction_type}
                                             </span>
+                                        </td>
+                                        {/* 🟢 แสดงข้อมูลสาขา */}
+                                        <td className="p-3">
+                                            <div className="flex items-center gap-1.5 text-xs">
+                                                {tx.branch_id || tx.metadata?.branch_name ? (
+                                                    <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded flex items-center gap-1">
+                                                        <Store size={12}/> {tx.branch_id || tx.metadata?.branch_name}
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-slate-300">-</span>
+                                                )}
+                                            </div>
                                         </td>
                                         <td className={`p-3 text-right font-black ${Number(tx.quantity_change) > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                                             {Number(tx.quantity_change) > 0 ? '+' : ''}{Number(tx.quantity_change).toLocaleString()}
