@@ -2,13 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { supabase } from '../../../supabaseClient'; // ⚠️ เช็ค Path ของ Supabase ให้ตรงกับโฟลเดอร์ของคุณ
+import { supabase } from '../../../supabaseClient'; 
 import { 
     Package, MapPin, Tag, Box, ArrowLeft, History, 
     TrendingUp, TrendingDown, Activity, AlertTriangle, Calendar,
-    Download, Store // 🟢 เพิ่ม Icon ที่ต้องใช้
+    Download, Store
 } from 'lucide-react';
-import * as XLSX from 'xlsx'; // 🟢 เพิ่ม Import สำหรับ Export Excel
+import * as XLSX from 'xlsx';
 
 export default function ProductDetailPage() {
     const params = useParams();
@@ -42,7 +42,22 @@ export default function ProductDetailPage() {
             const { data: txData } = await supabase.from('transactions_log')
                 .select('*').eq('product_id', prodData.product_id)
                 .order('transaction_date', { ascending: false }).limit(100);
-            setTransactions(txData || []);
+
+            // 🟢 4. ดึงข้อมูลสาขาทั้งหมดมาเทียบชื่อ (Mapping Branch Name)
+            const { data: branchData } = await supabase.from('master_branches').select('branch_id, branch_name');
+            const branches = branchData || [];
+
+            // นำชื่อสาขาไปประกอบร่างกับ Transaction
+            const txWithBranchNames = (txData || []).map((tx: any) => {
+                const matchedBranch = branches.find(b => b.branch_id === tx.branch_id);
+                return {
+                    ...tx,
+                    // ถ้าเจอชื่อสาขาให้แสดงชื่อ ถ้าไม่เจอให้แสดง ID หรือ Metadata ไปก่อน
+                    display_branch_name: matchedBranch ? matchedBranch.branch_name : (tx.branch_id || tx.metadata?.branch_name || '-')
+                };
+            });
+
+            setTransactions(txWithBranchNames);
 
         } catch (error: any) {
             console.error(error);
@@ -63,7 +78,7 @@ export default function ProductDetailPage() {
                 "วันที่ (Date)": dateObj.toLocaleDateString('th-TH'),
                 "เวลา (Time)": dateObj.toLocaleTimeString('th-TH'),
                 "ประเภท (Type)": tx.transaction_type,
-                "สาขาปลายทาง (Branch)": tx.branch_id || tx.metadata?.branch_name || '-', // ดึงชื่อสาขา
+                "สาขาปลายทาง (Branch)": tx.display_branch_name, // 🟢 ดึงชื่อสาขาไปลง Excel
                 "ยอดความเคลื่อนไหว (Change)": Number(tx.quantity_change),
                 "ยอดคงเหลือ (Balance)": Number(tx.balance_after),
                 "หมายเหตุ (Remarks)": tx.remarks || '-'
@@ -160,7 +175,7 @@ export default function ProductDetailPage() {
                                 <tr>
                                     <th className="p-3 pl-4">Date & Time</th>
                                     <th className="p-3 text-center">Type</th>
-                                    <th className="p-3">Branch (สาขา)</th> {/* 🟢 เปลี่ยนจาก Ref ID เป็น Branch */}
+                                    <th className="p-3">Branch (สาขา)</th> 
                                     <th className="p-3 text-right">Change</th>
                                     <th className="p-3 text-right">Balance</th>
                                     <th className="p-3">Remarks</th>
@@ -184,12 +199,12 @@ export default function ProductDetailPage() {
                                                 {tx.transaction_type}
                                             </span>
                                         </td>
-                                        {/* 🟢 แสดงข้อมูลสาขา */}
+                                        {/* 🟢 แสดงข้อมูลชื่อสาขา */}
                                         <td className="p-3">
                                             <div className="flex items-center gap-1.5 text-xs">
-                                                {tx.branch_id || tx.metadata?.branch_name ? (
+                                                {tx.display_branch_name !== '-' ? (
                                                     <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded flex items-center gap-1">
-                                                        <Store size={12}/> {tx.branch_id || tx.metadata?.branch_name}
+                                                        <Store size={12}/> {tx.display_branch_name}
                                                     </span>
                                                 ) : (
                                                     <span className="text-slate-300">-</span>
