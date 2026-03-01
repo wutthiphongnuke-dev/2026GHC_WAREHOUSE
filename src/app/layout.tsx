@@ -10,7 +10,8 @@ import {
   Database, Activity, Package, PackagePlus, Truck, Settings, 
   Search, Bell, User, History, X, AlertTriangle, QrCode, 
   BrainCircuit, RefreshCw, Menu, Store, TrendingUp, 
-  ChevronDown, ArrowRightLeft, LineChart, LayoutDashboard
+  ChevronDown, ArrowRightLeft, LineChart, LayoutDashboard,
+  Image as ImageIcon // 🟢 เพิ่ม Import ไอคอนรูปภาพ
 } from "lucide-react";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -163,6 +164,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 {/* 📦 กลุ่มคลังสินค้า */}
                 <NavDropdown title="Inventory" icon={<Package size={16} />}>
                   <DropdownItem href="/warehouse" icon={<Package size={16} />} label="Stock Balance" />
+                  
+                  {/* 🟢 เพิ่มเมนู Visual Catalog */}
+                  <DropdownItem href="/smallware" icon={<ImageIcon size={16} />} label="Visual Catalog (รูปภาพ)" />
+                  
                   {userRole !== 'VIEWER' && (
                     <>
                       <DropdownItem href="/cycle-count" icon={<RefreshCw size={16} />} label="Cycle Count" />
@@ -299,6 +304,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                         
                         <MobileNavGroup title="Inventory" icon={<Package size={18}/>}>
                             <MobileNavItem href="/warehouse" icon={<Package size={16}/>} label="Stock Balance" onClick={() => setIsMobileMenuOpen(false)}/>
+                            
+                            {/* 🟢 เพิ่มเมนู Visual Catalog */}
+                            <MobileNavItem href="/smallware" icon={<ImageIcon size={16}/>} label="Visual Catalog (รูปภาพ)" onClick={() => setIsMobileMenuOpen(false)}/>
+                            
                             {userRole !== 'VIEWER' && (
                               <>
                                 <MobileNavItem href="/cycle-count" icon={<RefreshCw size={16}/>} label="Cycle Count" onClick={() => setIsMobileMenuOpen(false)}/>
