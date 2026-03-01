@@ -47,7 +47,7 @@ export default function DevToolsPage() {
       { 
           id: 'master_branches', label: 'Branches', icon: Home, color: 'text-emerald-500', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20',
           pk: 'branch_id',
-          columns: [ { key: 'branch_id', label: 'Branch ID' }, { key: 'branch_name', label: 'Branch Name' }, { key: 'is_active', label: 'Active' } ]
+          columns: [ { key: 'branch_id', label: 'Branch ID & Name' }, { key: 'is_active', label: 'Active' } ]
       }
   ];
 
@@ -98,7 +98,8 @@ export default function DevToolsPage() {
       } else if (activeTab === 'master_vendors') {
           templateData = { vendor_id: 'V-001', vendor_name: 'บริษัท ตัวอย่าง จำกัด' };
       } else if (activeTab === 'master_branches') {
-          templateData = { branch_id: 'B-001', branch_name: 'สาขาหลัก', is_active: 'TRUE' };
+          // 🟢 Template ของสาขา ปรับให้ใส่แค่ 2 คอลัมน์ จะได้ไม่งง
+          templateData = { branch_name: '0001 EM-Emporium', is_active: 'TRUE' };
       }
 
       const ws = XLSX.utils.json_to_sheet([templateData]);
@@ -122,6 +123,25 @@ export default function DevToolsPage() {
             const pk = currentTabConfig?.pk || 'id';
             const cleanRows = rows.map(row => {
                 const cleanRow = { ...row };
+                
+                // 🟢 แก้ไขการจัดกลุ่มสาขา: ให้อ่านจากชื่อเต็ม (branch_name หรือ ชื่อสาขา) เป็นอันดับแรกสุด!
+                if (activeTab === 'master_branches') {
+                    const fullName = row['ชื่อสาขา'] || row['branch_name'] || row['Branch Name'] || row['branch_id'] || row['Branch ID'];
+                    
+                    if (fullName) {
+                        cleanRow.branch_id = String(fullName).trim();
+                        cleanRow.branch_name = String(fullName).trim();
+                    }
+                    if (cleanRow.is_active === undefined || cleanRow.is_active === "") {
+                        cleanRow.is_active = true; 
+                    }
+
+                    // ลบคอลัมน์ที่ไม่ตรงกับ Database ออก เพื่อป้องกัน Error ตอน Import
+                    delete cleanRow['ชื่อสาขา'];
+                    delete cleanRow['Branch Name'];
+                    delete cleanRow['Branch ID'];
+                }
+
                 if(cleanRow.standard_cost) cleanRow.standard_cost = parseFloat(cleanRow.standard_cost);
                 if(cleanRow.conversion_rate) cleanRow.conversion_rate = parseFloat(cleanRow.conversion_rate);
                 if(cleanRow.min_stock) cleanRow.min_stock = parseInt(cleanRow.min_stock);
@@ -132,7 +152,7 @@ export default function DevToolsPage() {
                 return cleanRow;
             }).filter(row => row[pk]); 
 
-            // Deduplication (กรองรหัสซ้ำ)
+            // Deduplication (กรองรหัสซ้ำ ยึดบรรทัดล่างสุด)
             const uniqueMap = new Map();
             cleanRows.forEach(row => {
                 uniqueMap.set(row[pk], row); 
@@ -150,7 +170,7 @@ export default function DevToolsPage() {
                 alert(alertMsg); 
                 fetchData();
             } else {
-                alert("⚠️ ไม่พบข้อมูลที่สามารถนำเข้าได้ กรุณาตรวจสอบคอลัมน์รหัส (ID)");
+                alert("⚠️ ไม่พบข้อมูลที่สามารถนำเข้าได้ กรุณาตรวจสอบหัวคอลัมน์ให้ตรงกับ Template");
             }
         } catch (error: any) { alert("Import Error: " + error.message); }
         setLoading(false);
@@ -195,12 +215,14 @@ export default function DevToolsPage() {
     
     if (activeTab === 'master_branches') {
         payload.is_active = payload.is_active === 'on' ? true : false;
+        // 🟢 บังคับให้ branch_id มีค่าเท่ากับ branch_name ที่ผู้ใช้กรอก
+        payload.branch_id = payload.branch_name;
     }
 
     const pk = currentTabConfig?.pk || 'id';
     const docId = payload[pk] as string;
 
-    if (!docId) { setSaveLoading(false); return alert(`กรุณาระบุรหัส ${pk}`); }
+    if (!docId) { setSaveLoading(false); return alert(`ข้อมูลไม่สมบูรณ์ ขาดรหัสหลัก (ID)`); }
 
     try {
         const { error } = await supabase.from(activeTab).upsert([payload], { onConflict: pk });
@@ -411,8 +433,19 @@ export default function DevToolsPage() {
 
                 {activeTab === 'master_branches' && (
                     <div className="space-y-4">
-                        <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Branch ID *</label><input name="branch_id" defaultValue={currentItem?.branch_id} required readOnly={!!currentItem} className={`w-full p-3 border border-slate-300 rounded-xl font-mono focus:ring-2 focus:ring-emerald-500 outline-none ${currentItem ? 'bg-slate-100 text-slate-500' : 'bg-white'}`} placeholder="B-001"/></div>
-                        <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Branch Name *</label><input name="branch_name" defaultValue={currentItem?.branch_name} required className="w-full p-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="สาขา..."/></div>
+                        <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl text-xs text-blue-700 mb-2">
+                            💡 แนะนำ: ระบุ Branch Name เป็นแบบ <b>"รหัส - ชื่อเต็ม"</b> (เช่น <b>0001 EM-Emporium</b>) ระบบจะนำไปใช้เป็น ID ด้วยอัตโนมัติ
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Branch ID & Name *</label>
+                            <input 
+                                name="branch_name" 
+                                defaultValue={currentItem?.branch_name} 
+                                required 
+                                className="w-full p-3 border border-slate-300 rounded-xl font-bold focus:ring-2 focus:ring-emerald-500 outline-none" 
+                                placeholder="เช่น 0001 EM-Emporium"
+                            />
+                        </div>
                         <div className="flex items-center gap-2 mt-4 p-3 bg-slate-50 border border-slate-200 rounded-xl">
                             <input type="checkbox" name="is_active" id="is_active" defaultChecked={currentItem ? currentItem.is_active : true} className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500"/>
                             <label htmlFor="is_active" className="text-sm font-bold text-slate-700 cursor-pointer">เปิดใช้งานสาขานี้ (Active)</label>

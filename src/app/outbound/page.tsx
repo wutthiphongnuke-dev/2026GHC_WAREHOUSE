@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabaseClient';
-import { ShoppingCart, Search, Plus, MapPin, Trash2, CheckCircle, UploadCloud, Store, FileText, AlertCircle, ScanBarcode, X, ChevronDown, ChevronUp, ShieldAlert } from 'lucide-react';
+import { ShoppingCart, Search, Plus, MapPin, Trash2, CheckCircle, UploadCloud, Store, FileText, AlertCircle, ScanBarcode, X, ChevronDown, ChevronUp, ShieldAlert, Camera } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface FormDataState {
@@ -54,7 +54,7 @@ const extractDateFromFilename = (filename: string): string | null => {
     return null; 
 };
 
-const Outbound = () => {
+export default function Outbound() {
   const [activeTab, setActiveTab] = useState<string>('scan'); 
   const [cart, setCart] = useState<any[]>([]);
   const [formData, setFormData] = useState<FormDataState>({
@@ -70,9 +70,18 @@ const Outbound = () => {
   const [showBranchDropdown, setShowBranchDropdown] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   
+  // --- Refs & Scanner States ---
   const scannerInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
   const [scanInput, setScanInput] = useState<string>('');
+
+  const [isCameraOpen, setIsCameraOpen] = useState<boolean>(false);
+  const scannerRef = useRef<any>(null);
+  const lastScanRef = useRef<{code: string, time: number}>({code: '', time: 0});
+  
+  // เก็บ State สต๊อกไว้ใน Ref เพื่อให้กล้องสแกนเข้าถึงข้อมูลล่าสุดได้โดยไม่ต้อง Render ใหม่
+  const inventoryRef = useRef<any[]>([]);
+  useEffect(() => { inventoryRef.current = inventory; }, [inventory]);
 
   useEffect(() => {
     setFormData(prev => ({ ...prev, docNo: `TO-MNL-${Date.now()}` }));
@@ -86,6 +95,41 @@ const Outbound = () => {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [activeTab]);
+
+  // 🟢 --- CAMERA SCANNER LOGIC ---
+  useEffect(() => {
+      if (isCameraOpen) {
+          import('html5-qrcode').then(({ Html5QrcodeScanner }) => {
+              const scanner = new Html5QrcodeScanner(
+                  "reader",
+                  { fps: 10, qrbox: { width: 250, height: 150 }, aspectRatio: 1.0 },
+                  false
+              );
+              scannerRef.current = scanner;
+              scanner.render(
+                  (decodedText: string) => {
+                      const now = Date.now();
+                      // หน่วงเวลา 2 วินาที ป้องกันแสกนบาร์โค้ดเดิมรัวๆ 
+                      if (lastScanRef.current.code === decodedText && (now - lastScanRef.current.time) < 2000) return;
+                      lastScanRef.current = { code: decodedText, time: now };
+                      
+                      processBarcode(decodedText);
+                  },
+                  (err: any) => { /* ignore */ }
+              );
+          }).catch(err => {
+              alert("กรุณาติดตั้ง html5-qrcode (npm install html5-qrcode)");
+              console.error(err);
+          });
+      }
+
+      return () => {
+          if (scannerRef.current) {
+              scannerRef.current.clear().catch(console.error);
+              scannerRef.current = null;
+          }
+      };
+  }, [isCameraOpen]);
 
   const fetchMasterData = async () => {
     try {
@@ -105,7 +149,7 @@ const Outbound = () => {
             current_qty: invMap[p.product_id]?.total_qty || 0,
             unit: p.base_uom || 'Piece',
             location: invMap[p.product_id] ? Array.from(invMap[p.product_id].locs).join(', ') : (p.default_location || 'MAIN'),
-            standard_cost: Number(p.standard_cost) || 0 // 🟢 ดึงทุนมาตรฐานไว้เผื่อกรณี Manual Scan
+            standard_cost: Number(p.standard_cost) || 0
         }));
 
         setInventory(processedInv);
@@ -121,22 +165,28 @@ const Outbound = () => {
       setShowBranchDropdown(false);
   };
 
+  // 🟢 ปรับให้ใช้ Functional Update state สำหรับตะกร้า เพื่อให้ทำงานคู่กับกล้องได้ดี
   const processBarcode = (barcode: string) => {
-      const stockItem = inventory.find(i => i.product_id.toLowerCase() === barcode.toLowerCase());
-      if (!stockItem) return alert(`❌ ไม่พบรหัสสินค้า [${barcode}] ในระบบ`);
-
-      const existingIdx = cart.findIndex(c => c.productId === stockItem.product_id);
-      if (existingIdx >= 0) {
-          const newCart = [...cart];
-          newCart[existingIdx].qtyPicked = (parseInt(newCart[existingIdx].qtyPicked) || 0) + 1;
-          setCart(newCart);
-      } else {
-          setCart([...cart, {
-              productId: stockItem.product_id, productName: stockItem.product_name,
-              qtyPicked: 1, stockQty: stockItem.current_qty, location: stockItem.location || '-', unit: stockItem.unit || 'Piece',
-              standardCost: stockItem.standard_cost // 🟢 เก็บราคาตั้งต้นไว้
-          }]);
+      const stockItem = inventoryRef.current.find(i => i.product_id.toLowerCase() === barcode.toLowerCase());
+      if (!stockItem) {
+          alert(`❌ ไม่พบรหัสสินค้า [${barcode}] ในระบบ`);
+          return;
       }
+
+      setCart(prevCart => {
+          const existingIdx = prevCart.findIndex(c => c.productId === stockItem.product_id);
+          if (existingIdx >= 0) {
+              const newCart = [...prevCart];
+              newCart[existingIdx].qtyPicked = (parseInt(newCart[existingIdx].qtyPicked) || 0) + 1;
+              return newCart;
+          } else {
+              return [...prevCart, {
+                  productId: stockItem.product_id, productName: stockItem.product_name,
+                  qtyPicked: 1, stockQty: stockItem.current_qty, location: stockItem.location || '-', unit: stockItem.unit || 'Piece',
+                  standardCost: stockItem.standard_cost 
+              }];
+          }
+      });
   };
 
   const handleScan = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -222,7 +272,7 @@ const Outbound = () => {
             await supabase.from('transactions_log').insert([{
                 transaction_type: 'OUTBOUND', product_id: item.productId, quantity_change: -qtyToDeduct, balance_after: newBalance,
                 branch_id: formData.branchId, remarks: `จ่ายออกตามเอกสาร ${formData.docNo}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
-                metadata: { document_cost_amt: costAmt, unit_cost: item.standardCost } // 🟢 แนบยอดเงินไปใน Log
+                metadata: { document_cost_amt: costAmt, unit_cost: item.standardCost }
             }]);
 
             linesToInsert.push({
@@ -300,7 +350,6 @@ const Outbound = () => {
                                     const stockItem = inventory.find(inv => inv.product_id === col0);
                                     const currentStock = stockItem ? stockItem.current_qty : 0;
                                     
-                                    // 🟢 ดึงยอด Unit Cost และ Amount จาก Excel (มี Fallback เผื่อไว้)
                                     const unitCost = parseFloat(row[4]) || 0;
                                     const costAmt = parseFloat(row[6]) || (qty * unitCost) || 0;
                                     
@@ -308,7 +357,7 @@ const Outbound = () => {
                                     if(targetOrder) {
                                         targetOrder.items.push({
                                             rm_code: col0, description: String(row[1]).trim(), qty: qty, unit: String(row[3]).trim(), 
-                                            unit_cost: unitCost, cost_amt: costAmt, // 🟢 ยอดเป๊ะตามเอกสาร
+                                            unit_cost: unitCost, cost_amt: costAmt, 
                                             inStock: currentStock, hasError: currentStock < qty 
                                         });
                                     }
@@ -396,7 +445,9 @@ const Outbound = () => {
 
         for (const order of validOrdersToProcess) {
             const rawBranch = order.to_warehouse ? String(order.to_warehouse).trim() : '';
-            const matchedBranch = branches.find(b => rawBranch === b.branch_id || rawBranch === b.branch_name || rawBranch.includes(b.branch_id) || rawBranch.includes(b.branch_name));
+            
+            // 🟢 EXACT MATCH: ตรวจสอบการจับคู่สาขาแบบตรงเป๊ะเท่านั้น!
+            const matchedBranch = branches.find(b => b.branch_id === rawBranch || b.branch_name === rawBranch);
             const targetBranchId = matchedBranch ? matchedBranch.branch_id : rawBranch;
 
             ordersToInsert.push({
@@ -439,7 +490,7 @@ const Outbound = () => {
                     balance_after: balanceByProduct[item.rm_code], branch_id: targetBranchId, 
                     remarks: `จ่ายออกตามเอกสาร ${order.to_number}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
                     transaction_date: txDate,
-                    metadata: { document_cost_amt: item.cost_amt, unit_cost: item.unit_cost } // 🟢 บันทึกยอดเงินเป๊ะๆ จากเอกสาร Excel ลงระบบ
+                    metadata: { document_cost_amt: item.cost_amt, unit_cost: item.unit_cost }
                 });
             }
         }
@@ -480,12 +531,21 @@ const Outbound = () => {
         {activeTab === 'scan' && (
             <div className="w-full md:w-[400px] bg-white border-b md:border-b-0 md:border-r flex flex-col shrink-0">
                 <div className="p-4 flex flex-col h-full max-h-[40vh] md:max-h-full">
+                    
+                    {/* 🟢 ส่วนสแกนบาร์โค้ด */}
                     <div className="mb-4 bg-slate-50 p-4 rounded-xl border-2 border-red-100 focus-within:border-red-500 focus-within:bg-red-50/20 transition-colors">
-                        <label className="text-xs font-bold text-red-500 uppercase flex items-center gap-1 mb-2"><ScanBarcode size={14}/> Barcode Scanner</label>
+                        <div className="flex items-center justify-between mb-2">
+                            <label className="text-xs font-bold text-red-500 uppercase flex items-center gap-1"><ScanBarcode size={14}/> Barcode Scanner</label>
+                            
+                            {/* ปุ่มเปิดกล้อง */}
+                            <button onClick={() => setIsCameraOpen(true)} className="flex items-center gap-1 bg-red-100 text-red-600 px-3 py-1.5 rounded-lg font-bold text-[10px] hover:bg-red-200 transition-colors shadow-sm">
+                                <Camera size={14}/> เปิดกล้องสแกน
+                            </button>
+                        </div>
                         <input 
                             ref={scannerInputRef} type="text" 
-                            className="w-full p-2 border border-slate-300 rounded-lg text-lg font-mono outline-none shadow-inner focus:ring-4 focus:ring-red-100"
-                            placeholder="Scan Product Barcode..."
+                            className="w-full p-2 border border-slate-300 rounded-lg text-lg font-mono outline-none shadow-inner focus:ring-4 focus:ring-red-100 bg-white"
+                            placeholder="สแกน หรือ พิมพ์บาร์โค้ด..."
                             value={scanInput} onChange={(e) => setScanInput(e.target.value)} onKeyDown={handleScan} autoFocus
                         />
                     </div>
@@ -690,8 +750,26 @@ const Outbound = () => {
             )}
         </div>
       </div>
+
+      {/* 🟢 CAMERA MODAL */}
+      {isCameraOpen && (
+          <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-[100] flex flex-col items-center justify-center p-4 animate-fade-in">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+                  <div className="p-4 bg-slate-50 border-b flex justify-between items-center">
+                      <h3 className="font-bold text-slate-800 flex items-center gap-2"><Camera size={20} className="text-red-500"/> สแกนผ่านกล้องมือถือ</h3>
+                      <button onClick={() => setIsCameraOpen(false)} className="text-slate-400 hover:text-red-500 bg-white p-2 rounded-full shadow-sm"><X size={20}/></button>
+                  </div>
+                  <div className="p-4 bg-black flex justify-center items-center relative min-h-[300px]">
+                      {/* กล่องสำหรับให้ html5-qrcode เรนเดอร์กล้อง */}
+                      <div id="reader" className="w-full bg-white rounded-xl overflow-hidden"></div>
+                  </div>
+                  <div className="p-4 text-center bg-slate-50 border-t">
+                      <div className="text-sm font-bold text-slate-600">หันกล้องไปที่บาร์โค้ด หรือ QR Code</div>
+                      <div className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-widest">(ระบบจะเพิ่มสินค้าลงตะกร้าอัตโนมัติ)</div>
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
-};
-
-export default Outbound;
+}
