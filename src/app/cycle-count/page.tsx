@@ -5,7 +5,8 @@ import { supabase } from '../../supabaseClient';
 import { 
     RefreshCw, MapPin, Search, ClipboardCheck, ShieldAlert, 
     CheckCircle, X, AlertTriangle, ArrowRight, Save, Activity, Plus, Package,
-    Download, Bookmark, Edit2, FileText, Database, Users, CloudOff, Cloud, Trash2
+    Download, Bookmark, Edit2, FileText, Database, Users, CloudOff, Cloud, Trash2,
+    UploadCloud, FileSpreadsheet // 🟢 นำเข้า Icon เพิ่มเติม
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -132,15 +133,13 @@ export default function CycleCountPage() {
       setLoading(false);
   };
 
-  // 🟢 2.1 DELETE TASK (ฟังก์ชันลบใบงาน)
   const deleteTask = async (taskId: string, e?: React.MouseEvent) => {
-      if (e) e.stopPropagation(); // ป้องกันไม่ให้คลิกแล้วเด้งเปิดหน้า Worksheet
+      if (e) e.stopPropagation(); 
       
       if (!window.confirm("⚠️ ยืนยันการลบใบงานนี้ใช่หรือไม่?\nข้อมูลการตรวจนับทั้งหมดในใบงานนี้จะถูกลบและกู้คืนไม่ได้!")) return;
       
       setLoading(true);
       try {
-          // ใช้ Cascade Delete จาก SQL: ลบ Task จะลบ Lines ด้วยอัตโนมัติ
           const { error } = await supabase.from('cycle_count_tasks').delete().eq('task_id', taskId);
           if (error) throw error;
           
@@ -240,7 +239,93 @@ export default function CycleCountPage() {
   };
 
   // =====================================================================
-  // 4. POST TO STOCK (ปรับสต๊อกอย่างแม่นยำตาม Location ของสินค้า)
+  // 🟢 EXCEL EXPORT / IMPORT LOGIC
+  // =====================================================================
+  const handleDownloadTemplate = () => {
+      const templateData = lines.map(item => ({
+          'รหัสสินค้า (Product ID) *ห้ามแก้*': item.product_id,
+          'ชื่อสินค้า (Product Name)': item.product_name,
+          'ยอดระบบ (System Qty)': item.system_qty,
+          'ยอดที่นับได้ (Counted Qty)': '', // ปล่อยว่างให้พนักงานไปกรอก
+          'หมายเหตุ (Remarks)': ''
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(templateData);
+      // แนะนำการตั้งค่าความกว้างคอลัมน์
+      ws['!cols'] = [{ wch: 25 }, { wch: 40 }, { wch: 15 }, { wch: 20 }, { wch: 30 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Count_Template");
+      XLSX.writeFile(wb, `Template_${activeTask.task_no}.xlsx`);
+  };
+
+  const handleImportExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (evt: any) => {
+          try {
+              const data = new Uint8Array(evt.target.result);
+              const workbook = XLSX.read(data, { type: 'array' });
+              const rows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[workbook.SheetNames[0]]);
+              
+              let updatedCount = 0;
+              const newLocalCounts = { ...localCounts };
+              const newLocalRemarks = { ...localRemarks };
+              const newDirtyLines = new Set(dirtyLines);
+
+              rows.forEach((row: any) => {
+                  const pid = (row['รหัสสินค้า (Product ID) *ห้ามแก้*'] || row['Product ID'] || '').toString().trim();
+                  const countedQty = row['ยอดที่นับได้ (Counted Qty)'];
+                  const remark = row['หมายเหตุ (Remarks)'] || '';
+
+                  // อัปเดตเฉพาะรายการที่มีการกรอกตัวเลขเข้ามาเท่านั้น
+                  if (pid && countedQty !== undefined && countedQty !== null && countedQty !== '') {
+                      const matchingLine = lines.find(l => l.product_id === pid);
+                      if (matchingLine) {
+                          newLocalCounts[matchingLine.line_id] = countedQty.toString();
+                          newLocalRemarks[matchingLine.line_id] = remark.toString();
+                          newDirtyLines.add(matchingLine.line_id);
+                          updatedCount++;
+                      }
+                  }
+              });
+
+              if (updatedCount > 0) {
+                  setLocalCounts(newLocalCounts);
+                  setLocalRemarks(newLocalRemarks);
+                  setDirtyLines(newDirtyLines);
+                  alert(`✅ โหลดข้อมูลผลการนับสำเร็จ ${updatedCount} รายการ\n\n(ข้อมูลจะแสดงเป็นสีเหลือง กรุณาตรวจสอบและกดปุ่ม "Sync Data" เพื่อบันทึกขึ้นระบบ)`);
+              } else {
+                  alert("⚠️ ไม่พบข้อมูลยอดนับในไฟล์ หรือรหัสสินค้าไม่ตรงกับในใบงาน");
+              }
+          } catch (err: any) { alert("Error reading file: " + err.message); }
+          e.target.value = ''; // รีเซ็ต input file
+      };
+      reader.readAsArrayBuffer(file);
+  };
+
+  const handleExportResult = () => {
+      const exportData = lines.map(item => ({
+          'Task No': activeTask.task_no,
+          'Zone': activeTask.location_zone,
+          'รหัสสินค้า (Product ID)': item.product_id,
+          'ชื่อสินค้า (Product Name)': item.product_name,
+          'หน่วย (Unit)': item.unit,
+          'ยอดระบบ (B)': item.system_qty,
+          'ยอดนับได้จริง (A)': item.counted_qty !== null ? item.counted_qty : 'ยังไม่ได้นับ',
+          'ส่วนต่าง (C)': item.diff_qty !== null ? item.diff_qty : '-',
+          'หมายเหตุ (Remarks)': item.remarks || (item.is_extra ? 'นอกระบบ/หลงโซน' : '')
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Count_Result");
+      XLSX.writeFile(wb, `Result_${activeTask.task_no}.xlsx`);
+  };
+
+  // =====================================================================
+  // 4. POST TO STOCK
   // =====================================================================
   const confirmAndPost = async () => {
       if (dirtyLines.size > 0) return alert("คุณยังมีข้อมูลที่ยังไม่ได้ Sync กรุณากดปุ่ม 'Sync Data' ก่อนยืนยัน");
@@ -338,25 +423,6 @@ export default function CycleCountPage() {
       setLoading(false);
   };
 
-  const handleExport = () => {
-      const exportData = lines.map(item => ({
-          'Task No': activeTask.task_no,
-          'Zone': activeTask.location_zone,
-          'รหัสสินค้า (Product ID)': item.product_id,
-          'ชื่อสินค้า (Product Name)': item.product_name,
-          'หน่วย (Unit)': item.unit,
-          'ยอดระบบ (B)': item.system_qty,
-          'ยอดนับได้จริง (A)': item.counted_qty !== null ? item.counted_qty : 'ยังไม่ได้นับ',
-          'ส่วนต่าง (C)': item.diff_qty !== null ? item.diff_qty : '-',
-          'หมายเหตุ (Remarks)': item.remarks || (item.is_extra ? 'นอกระบบ/หลงโซน' : '')
-      }));
-
-      const ws = XLSX.utils.json_to_sheet(exportData);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Count_Result");
-      XLSX.writeFile(wb, `${activeTask.task_no}_Result.xlsx`);
-  };
-
   // --- Helpers ---
   const filteredLines = lines.filter(l => 
       (l.product_name||'').toLowerCase().includes(searchLine.toLowerCase()) || 
@@ -418,7 +484,6 @@ export default function CycleCountPage() {
                                               <div className="flex items-center gap-2">
                                                   <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${task.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700 animate-pulse'}`}>{task.status.replace('_', ' ')}</span>
                                                   
-                                                  {/* 🟢 ปุ่มลบใบงานในหน้า List */}
                                                   {task.status !== 'COMPLETED' && (
                                                       <button onClick={(e) => deleteTask(task.task_id, e)} className="text-slate-300 hover:text-rose-500 transition-colors p-1" title="ลบใบงานนี้">
                                                           <Trash2 size={16}/>
@@ -464,9 +529,27 @@ export default function CycleCountPage() {
                       
                       <div className="flex flex-wrap gap-2">
                           {activeTask.status !== 'COMPLETED' && (
-                              <button onClick={() => setShowAddModal(true)} className="bg-white/10 hover:bg-white/20 text-white border border-white/20 px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-1"><Plus size={14}/> เพิ่มของนอกใบงาน</button>
+                              <>
+                                  <button onClick={() => setShowAddModal(true)} className="bg-white/10 hover:bg-white/20 text-white border border-white/20 px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-1">
+                                      <Plus size={14}/> เพิ่มของนอกใบงาน
+                                  </button>
+                                  
+                                  {/* 🟢 กลุ่มปุ่ม Excel (Template / Import) */}
+                                  <div className="flex bg-white/10 border border-white/20 rounded-lg overflow-hidden">
+                                      <button onClick={handleDownloadTemplate} className="px-3 py-2 text-xs font-bold hover:bg-white/20 transition-colors flex items-center gap-1 border-r border-white/10" title="โหลดไฟล์ Excel ไปกรอกข้อมูลผลนับ">
+                                          <FileSpreadsheet size={14}/> โหลดใบนับ (Template)
+                                      </button>
+                                      <label className="px-3 py-2 text-xs font-bold text-amber-300 hover:bg-white/20 transition-colors flex items-center gap-1 cursor-pointer" title="อัปโหลดไฟล์ Excel ที่กรอกผลนับแล้ว">
+                                          <UploadCloud size={14}/> อัปโหลดผลนับ
+                                          <input type="file" accept=".xlsx, .csv" hidden onChange={handleImportExcel} />
+                                      </label>
+                                  </div>
+                              </>
                           )}
-                          <button onClick={handleExport} className="bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 shadow-sm"><Download size={14}/> Export</button>
+                          
+                          <button onClick={handleExportResult} className="bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 shadow-sm">
+                              <Download size={14}/> โหลดสรุปผล
+                          </button>
                           
                           {activeTask.status !== 'COMPLETED' && (
                               <button onClick={syncToCloud} className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-all ${dirtyLines.size > 0 ? 'bg-amber-400 text-amber-900 shadow-lg shadow-amber-500/20' : 'bg-indigo-500 text-white hover:bg-indigo-600'}`}>
@@ -579,12 +662,9 @@ export default function CycleCountPage() {
               {/* Bottom Action Bar */}
               {activeTask.status !== 'COMPLETED' && (
                   <div className="p-4 border-x border-b rounded-b-2xl border-slate-200 bg-white flex flex-col sm:flex-row justify-between items-center gap-3 shadow-[0_-4px_10px_-5px_rgba(0,0,0,0.1)] shrink-0">
-                      
-                      {/* 🟢 ปุ่มลบใบงานจากในหน้า Worksheet */}
                       <button onClick={() => deleteTask(activeTask.task_id)} className="w-full sm:w-auto px-4 py-2 font-bold text-rose-500 hover:bg-rose-50 rounded-xl transition-colors text-sm md:text-base flex items-center justify-center gap-2">
                           <Trash2 size={16}/> ลบและทิ้งใบงานนี้
                       </button>
-                      
                       <button onClick={confirmAndPost} className="w-full sm:w-auto px-8 py-3 rounded-xl font-bold shadow-lg transition-all flex items-center justify-center gap-2 text-white bg-slate-900 hover:bg-black hover:scale-[1.02]">
                           <Save size={18}/> ยืนยันจบงานและอัปเดตสต๊อก
                       </button>
