@@ -127,7 +127,7 @@ export default function BranchDeliveryReport() {
                   product_name: pInfo?.product_name || 'Unknown',
                   category: pInfo?.category || 'Uncategorized',
                   base_uom: pInfo?.base_uom || '-',
-                  value: Math.abs(Number(tx.quantity_change)) * (Number(pInfo?.standard_cost) || 0)
+                  value: Number(tx.metadata?.document_cost_amt) || (Math.abs(Number(tx.quantity_change)) * (Number(pInfo?.standard_cost) || 0))
               };
           });
 

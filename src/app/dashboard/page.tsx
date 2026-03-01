@@ -120,7 +120,7 @@ export default function DashboardPage() {
               const pInfo = productMap[tx.product_id] || {};
               const qty = Math.abs(Number(tx.quantity_change));
               const cost = Number(pInfo.standard_cost) || 0;
-              const val = qty * cost; 
+              const val = Number(tx.metadata?.document_cost_amt) || (qty * cost); 
               
               const txDate = new Date(tx.transaction_date);
               let dateKey = '';

@@ -31,32 +31,27 @@ interface ParsedOrder {
   delivery_date: string;
   items: ParsedItem[];
   isDuplicate?: boolean; 
-  source_file?: string; // เก็บชื่อไฟล์อ้างอิง
+  source_file?: string; 
 }
 
-// 🟢 ฟังก์ชันดึงวันที่จากชื่อไฟล์ (รองรับหลาย Format)
 const extractDateFromFilename = (filename: string): string | null => {
-    // 1. Format: YYYY-MM-DD หรือ YYYY_MM_DD
     let match = filename.match(/(\d{4})[-_.](\d{2})[-_.](\d{2})/);
     if (match) return `${match[1]}-${match[2]}-${match[3]}`;
 
-    // 2. Format: DD-MM-YYYY หรือ DD_MM_YYYY
     match = filename.match(/(\d{2})[-_.](\d{2})[-_.](\d{4})/);
     if (match) return `${match[3]}-${match[2]}-${match[1]}`;
 
-    // 3. Format: YYYYMMDD (เลขติดกัน)
     match = filename.match(/(\d{4})(\d{2})(\d{2})/);
     if (match && parseInt(match[2]) <= 12 && parseInt(match[3]) <= 31 && parseInt(match[1]) > 2000) {
         return `${match[1]}-${match[2]}-${match[3]}`;
     }
 
-    // 4. Format: DDMMYYYY (เลขติดกัน)
     match = filename.match(/(\d{2})(\d{2})(\d{4})/);
     if (match && parseInt(match[2]) <= 12 && parseInt(match[1]) <= 31 && parseInt(match[3]) > 2000) {
         return `${match[3]}-${match[2]}-${match[1]}`;
     }
 
-    return null; // ถ้าไม่เจอรูปแบบวันที่ในชื่อไฟล์
+    return null; 
 };
 
 const Outbound = () => {
@@ -109,7 +104,8 @@ const Outbound = () => {
             product_name: p.product_name,
             current_qty: invMap[p.product_id]?.total_qty || 0,
             unit: p.base_uom || 'Piece',
-            location: invMap[p.product_id] ? Array.from(invMap[p.product_id].locs).join(', ') : (p.default_location || 'MAIN')
+            location: invMap[p.product_id] ? Array.from(invMap[p.product_id].locs).join(', ') : (p.default_location || 'MAIN'),
+            standard_cost: Number(p.standard_cost) || 0 // 🟢 ดึงทุนมาตรฐานไว้เผื่อกรณี Manual Scan
         }));
 
         setInventory(processedInv);
@@ -125,7 +121,6 @@ const Outbound = () => {
       setShowBranchDropdown(false);
   };
 
-  // 1. SCAN LOGIC
   const processBarcode = (barcode: string) => {
       const stockItem = inventory.find(i => i.product_id.toLowerCase() === barcode.toLowerCase());
       if (!stockItem) return alert(`❌ ไม่พบรหัสสินค้า [${barcode}] ในระบบ`);
@@ -138,7 +133,8 @@ const Outbound = () => {
       } else {
           setCart([...cart, {
               productId: stockItem.product_id, productName: stockItem.product_name,
-              qtyPicked: 1, stockQty: stockItem.current_qty, location: stockItem.location || '-', unit: stockItem.unit || 'Piece'
+              qtyPicked: 1, stockQty: stockItem.current_qty, location: stockItem.location || '-', unit: stockItem.unit || 'Piece',
+              standardCost: stockItem.standard_cost // 🟢 เก็บราคาตั้งต้นไว้
           }]);
       }
   };
@@ -221,9 +217,12 @@ const Outbound = () => {
             const { data: newLots } = await supabase.from('inventory_lots').select('quantity').eq('product_id', item.productId);
             const newBalance = newLots?.reduce((sum, l) => sum + Number(l.quantity), 0) || 0;
 
+            const costAmt = qtyToDeduct * (item.standardCost || 0);
+
             await supabase.from('transactions_log').insert([{
                 transaction_type: 'OUTBOUND', product_id: item.productId, quantity_change: -qtyToDeduct, balance_after: newBalance,
                 branch_id: formData.branchId, remarks: `จ่ายออกตามเอกสาร ${formData.docNo}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
+                metadata: { document_cost_amt: costAmt, unit_cost: item.standardCost } // 🟢 แนบยอดเงินไปใน Log
             }]);
 
             linesToInsert.push({
@@ -241,7 +240,6 @@ const Outbound = () => {
     setLoading(false);
   };
 
-  // 2. 🟢 BULK IMPORT EXCEL LOGIC (รองรับหลายไฟล์ & ดึงวันที่จากชื่อไฟล์)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -250,11 +248,9 @@ const Outbound = () => {
     try {
         const allParsedOrders: Record<string, ParsedOrder> = {};
 
-        // ลูปอ่านทีละไฟล์แบบคู่ขนาน
         const readFilePromises = Array.from(files).map(file => {
             return new Promise<void>((resolve, reject) => {
                 
-                // 🟢 สกัดวันที่จากชื่อไฟล์ (ถ้ามี)
                 const dateFromFilename = extractDateFromFilename(file.name);
 
                 const reader = new FileReader();
@@ -272,9 +268,7 @@ const Outbound = () => {
 
                             const col0 = String(row[0]).trim();
 
-                            // ถ้าพบบรรทัดหัวบิล
                             if (col0.startsWith("TO-")) {
-                                // 🟢 ใช้วันที่จากชื่อไฟล์เป็นหลัก ถ้าหาไม่เจอค่อยใช้วันที่ใน Excel
                                 let dDate = dateFromFilename;
                                 if (!dDate) {
                                     dDate = String(row[4]).trim();
@@ -300,17 +294,22 @@ const Outbound = () => {
                                 continue;
                             }
 
-                            // ถ้าพบบรรทัดรายการสินค้า
                             if (currentHeader && col0 && !col0.startsWith("TO-") && !col0.includes("Total") && String(row[3]) !== "Total") {
                                 const qty = parseFloat(row[2]) || 0;
                                 if (qty > 0) {
                                     const stockItem = inventory.find(inv => inv.product_id === col0);
                                     const currentStock = stockItem ? stockItem.current_qty : 0;
                                     
+                                    // 🟢 ดึงยอด Unit Cost และ Amount จาก Excel (มี Fallback เผื่อไว้)
+                                    const unitCost = parseFloat(row[4]) || 0;
+                                    const costAmt = parseFloat(row[6]) || (qty * unitCost) || 0;
+                                    
                                     const targetOrder = allParsedOrders[currentHeader.to_number];
                                     if(targetOrder) {
                                         targetOrder.items.push({
-                                            rm_code: col0, description: String(row[1]).trim(), qty: qty, unit: String(row[3]).trim(), unit_cost: parseFloat(row[4]) || 0, cost_amt: parseFloat(row[6]) || 0, inStock: currentStock, hasError: currentStock < qty 
+                                            rm_code: col0, description: String(row[1]).trim(), qty: qty, unit: String(row[3]).trim(), 
+                                            unit_cost: unitCost, cost_amt: costAmt, // 🟢 ยอดเป๊ะตามเอกสาร
+                                            inStock: currentStock, hasError: currentStock < qty 
                                         });
                                     }
                                 }
@@ -325,7 +324,6 @@ const Outbound = () => {
             });
         });
 
-        // รอจนกว่าจะอ่านไฟล์ครบทุกไฟล์
         await Promise.all(readFilePromises);
 
         const toNumbers = Object.keys(allParsedOrders);
@@ -352,13 +350,12 @@ const Outbound = () => {
 
     } catch (error: any) { alert("เกิดข้อผิดพลาดในการอ่านไฟล์: " + error.message); }
     setLoading(false);
-    e.target.value = ''; // Reset เผื่อกดอัปโหลดไฟล์เดิมซ้ำ
+    e.target.value = ''; 
   };
 
   const validOrdersToProcess = bulkOrders.filter(o => !o.isDuplicate);
   const needsForceIssue = validOrdersToProcess.some(o => o.items.some(i => i.hasError));
 
-  // 🚀 ฟังก์ชันสุดยอดความเร็ว Bulk Processing
   const handleSubmitBulk = async () => {
     if (validOrdersToProcess.length === 0) return alert("ไม่มีเอกสารใหม่ให้บันทึก (เป็นเอกสารซ้ำทั้งหมด)");
     
@@ -441,7 +438,8 @@ const Outbound = () => {
                     transaction_type: 'OUTBOUND', product_id: item.rm_code, quantity_change: -item.qty,
                     balance_after: balanceByProduct[item.rm_code], branch_id: targetBranchId, 
                     remarks: `จ่ายออกตามเอกสาร ${order.to_number}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
-                    transaction_date: txDate 
+                    transaction_date: txDate,
+                    metadata: { document_cost_amt: item.cost_amt, unit_cost: item.unit_cost } // 🟢 บันทึกยอดเงินเป๊ะๆ จากเอกสาร Excel ลงระบบ
                 });
             }
         }
@@ -611,7 +609,6 @@ const Outbound = () => {
                             <UploadCloud size={48} className="mx-auto text-red-400 mb-2"/>
                             <span className="text-lg font-bold text-slate-700">อัปโหลดรายงานการเบิก (ลากวางได้หลายไฟล์)</span>
                             <p className="text-xs text-slate-400 mt-2">รูปแบบวันที่รองรับในชื่อไฟล์: YYYY-MM-DD, DD-MM-YYYY</p>
-                            {/* 🟢 เพิ่ม multiple ให้เลือกได้หลายไฟล์ */}
                             <input type="file" accept=".xlsx, .csv" multiple className="hidden" onChange={handleFileUpload} disabled={loading}/>
                         </label>
                     </div>
