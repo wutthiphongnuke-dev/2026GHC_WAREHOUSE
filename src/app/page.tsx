@@ -67,12 +67,12 @@ export default function HomePage() {
 
         {/* --- 2. HERO TYPOGRAPHY --- */}
         <div className="text-center mb-16 relative">
-          <div className="text-xs md:text-sm font-bold tracking-[0.3em] text-slate-500 mb-4">GHC WAREHOUSE MANAGEMENT BY WUTTHIPHONG</div>
+          <div className="text-xs md:text-sm font-bold tracking-[0.3em] text-slate-500 mb-4">WAREHOUSE MANAGEMENT BY WUTTHIPHONG</div>
           <h1 className="text-6xl md:text-8xl font-black tracking-tighter text-white mb-6 drop-shadow-2xl">
             2026 <span className="text-transparent bg-clip-text bg-gradient-to-br from-cyan-400 to-blue-600">GHC WAREHOUSE</span>
           </h1>
           <p className="text-slate-400 max-w-2xl mx-auto text-lg md:text-xl font-light leading-relaxed">
-            ระบบการจัดการคลังสินค้า 2026 <br/>
+            Warehouse Management System for Greyhound cafe' <br/>
             <span className="text-slate-500 text-sm">Synchronized • Secure • Scalable</span>
           </p>
         </div>

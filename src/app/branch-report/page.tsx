@@ -456,7 +456,7 @@ export default function BranchDeliveryReport() {
                   {selectedBranch === 'ALL' && (
                       <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200 lg:col-span-2">
                           <h2 className="text-sm md:text-base font-bold text-slate-800 mb-4 flex items-center gap-2">
-                              <Target className="text-amber-500 w-4 h-4 md:w-5 md:h-5"/> เปรียบเทียบ Top 5 สาขาที่ส่งออกสูงสุด
+                              <Target className="text-amber-500 w-4 h-4 md:w-5 md:h-5"/> เปรียบเทียบ Top 5 คลังที่เบิกมากที่สุด
                           </h2>
                           <div className="w-full h-64 md:h-72">
                               {branchComparisonData.length === 0 ? (
@@ -483,7 +483,7 @@ export default function BranchDeliveryReport() {
                   {/* 4. Top 5 Products List */}
                   <div className={`bg-white p-5 rounded-3xl shadow-sm border border-slate-200 ${selectedBranch !== 'ALL' ? 'lg:col-span-3' : 'lg:col-span-1'}`}>
                       <h2 className="text-sm md:text-base font-bold text-slate-800 mb-4 flex items-center gap-2">
-                          <Package className="text-blue-500 w-4 h-4 md:w-5 md:h-5"/> Top 5 สินค้าขายดี
+                          <Package className="text-blue-500 w-4 h-4 md:w-5 md:h-5"/> Top 5 สินค้าจ่ายให้สาขา
                       </h2>
                       <div className="flex flex-col gap-3">
                           {topProductsData.length === 0 ? (
@@ -531,7 +531,7 @@ export default function BranchDeliveryReport() {
                           </thead>
                           <tbody className="divide-y divide-slate-100">
                               {filteredData.slice(0, 100).map((tx, idx) => (
-                                  <tr key={tx.transaction_id || idx} className="hover:bg-slate-50/80 transition-colors group">
+                                  <tr key={`${tx.transaction_id}-${idx}`} className="hover:bg-slate-50/80 transition-colors group">
                                       <td className="p-3 md:p-4 pl-4 md:pl-6">
                                           <div className="font-bold text-slate-700">{tx.dateObj.toLocaleDateString('th-TH')}</div>
                                           <div className="text-[10px] text-slate-400 mt-0.5 font-mono">{tx.dateObj.toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'})}</div>
