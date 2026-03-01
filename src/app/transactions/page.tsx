@@ -5,12 +5,13 @@ import { supabase } from '../../supabaseClient';
 import { 
     History, Search, Download, Filter, Calendar, Activity, 
     ArrowUpDown, ChevronLeft, ChevronRight, FileText, Database, Snowflake, Store,
-    Eye, X, AlertOctagon, GitBranch, MapPin, Receipt, Clock, Package
+    Eye, X, AlertOctagon, GitBranch, MapPin, Receipt, Clock, Package, RefreshCw
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 export default function TransactionLogPage() {
   const [loading, setLoading] = useState<boolean>(true);
+  const [syncProgress, setSyncProgress] = useState<string>(''); 
   const [transactions, setTransactions] = useState<any[]>([]);
   const [branchMap, setBranchMap] = useState<Record<string, string>>({}); 
 
@@ -40,8 +41,10 @@ export default function TransactionLogPage() {
       fetchData();
   }, [startDate, endDate]);
 
+  // ==================== FETCH DATA (ระบบ Chunking ทะลวงขีดจำกัด) ====================
   const fetchData = async () => {
       setLoading(true);
+      setSyncProgress('กำลังเตรียมข้อมูล...');
       try {
           const [prodRes, branchRes] = await Promise.all([
               supabase.from('master_products').select('product_id, product_name, category, base_uom, default_location'),
@@ -55,17 +58,52 @@ export default function TransactionLogPage() {
           (branchRes.data || []).forEach(b => bMap[b.branch_id] = b.branch_name);
           setBranchMap(bMap);
 
-          const { data: txData, error } = await supabase
-              .from('transactions_log')
-              .select('*')
-              .gte('transaction_date', `${startDate}T00:00:00.000Z`)
-              .lte('transaction_date', `${endDate}T23:59:59.999Z`)
-              .order('transaction_date', { ascending: false })
-              .limit(5000);
+          setSyncProgress('กำลังดึงประวัติการทำรายการ...');
+          let allTransactions: any[] = [];
+          let hasMore = true;
+          let offset = 0;
+          const limitSize = 1000; 
 
-          if (error) throw error;
+          while (hasMore) {
+              const { data: tData, error: tErr } = await supabase
+                  .from('transactions_log')
+                  .select('*')
+                  .gte('transaction_date', `${startDate}T00:00:00.000Z`)
+                  .lte('transaction_date', `${endDate}T23:59:59.999Z`)
+                  .order('transaction_date', { ascending: false })
+                  .range(offset, offset + limitSize - 1);
 
-          const formattedData = (txData || []).map(tx => {
+              if (tErr) {
+                  console.error("Error loading transactions:", tErr);
+                  break;
+              }
+
+              if (tData && tData.length > 0) {
+                  allTransactions = [...allTransactions, ...tData];
+                  offset += limitSize;
+                  setSyncProgress(`ดึงประวัติแล้ว ${allTransactions.length.toLocaleString()} รายการ...`);
+                  
+                  if (tData.length < limitSize) {
+                      hasMore = false; 
+                  }
+              } else {
+                  hasMore = false;
+              }
+          }
+
+          setSyncProgress('กำลังประมวลผลข้อมูล...');
+          
+          // 🟢 1. Data Deduplication (กรองข้อมูลซ้ำที่เกิดจากการ Pagination)
+          const uniqueTxMap = new Map();
+          allTransactions.forEach(tx => {
+              // ถ้ามี id นี้อยู่แล้ว มันจะถูกเขียนทับด้วยข้อมูลเดิม (แปลว่ากรองตัวซ้ำออกไป)
+              if (tx.transaction_id) {
+                  uniqueTxMap.set(tx.transaction_id, tx);
+              }
+          });
+          const deduplicatedTransactions = Array.from(uniqueTxMap.values());
+
+          const formattedData = deduplicatedTransactions.map(tx => {
               const anomalies = [];
               if (Number(tx.balance_after) < 0) anomalies.push("ยอดสต๊อกคงเหลือติดลบ (Negative Stock)");
               if (tx.transaction_type === 'OUTBOUND' && Math.abs(Number(tx.quantity_change)) >= 1000) anomalies.push("ยอดจ่ายออกสูงผิดปกติ (Volume Spike)");
@@ -93,6 +131,7 @@ export default function TransactionLogPage() {
           alert("ไม่สามารถดึงข้อมูลประวัติได้: " + error.message);
       }
       setLoading(false);
+      setSyncProgress(''); 
   };
 
   const filteredData = useMemo(() => {
@@ -202,11 +241,17 @@ export default function TransactionLogPage() {
             </h1>
             <p className="text-slate-500 text-sm mt-2">ตรวจสอบประวัติการเคลื่อนไหว, ไทม์ไลน์สินค้า และระบบตรวจจับความผิดปกติอัจฉริยะ (AI-Anomaly)</p>
         </div>
-        <div className="flex gap-2">
-            <button onClick={fetchData} className="px-4 py-2 bg-white border border-slate-300 text-slate-600 rounded-lg text-sm font-bold shadow-sm hover:bg-slate-50 transition-colors flex items-center gap-2">
-                <Database size={16}/> Sync DB
+        <div className="flex items-center gap-3">
+            {syncProgress && (
+                <span className="text-xs font-bold text-indigo-600 animate-pulse bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100">
+                    {syncProgress}
+                </span>
+            )}
+            
+            <button onClick={fetchData} disabled={loading} className="px-4 py-2 bg-white border border-slate-300 text-slate-600 rounded-lg text-sm font-bold shadow-sm hover:bg-slate-50 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                <RefreshCw size={16} className={loading ? "animate-spin text-indigo-500" : ""} /> Sync DB
             </button>
-            <button onClick={handleExport} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold shadow-md shadow-indigo-200 hover:bg-indigo-700 transition-colors flex items-center gap-2">
+            <button onClick={handleExport} disabled={loading} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold shadow-md shadow-indigo-200 hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
                 <Download size={16}/> Export Excel
             </button>
         </div>
@@ -216,7 +261,6 @@ export default function TransactionLogPage() {
       <div className="bg-white p-4 rounded-t-2xl border border-slate-200 shadow-sm flex flex-col lg:flex-row gap-4 items-center justify-between flex-shrink-0 z-20 relative">
           <div className="relative flex-1 w-full lg:max-w-md">
               <Search className="absolute left-3 top-2.5 text-slate-400" size={18}/>
-              {/* 🟢 เพิ่ม id และ name ให้ช่องค้นหา */}
               <input 
                   type="text" 
                   id="searchTransaction"
@@ -231,7 +275,6 @@ export default function TransactionLogPage() {
           <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
               <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
                   <Filter size={16} className="text-slate-400 ml-2"/>
-                  {/* 🟢 เพิ่ม id และ name ให้ dropdown */}
                   <select 
                       id="typeFilter"
                       name="typeFilter"
@@ -248,7 +291,6 @@ export default function TransactionLogPage() {
 
               <div className="flex flex-wrap items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
                   <Calendar size={16} className="text-slate-400 shrink-0"/>
-                  {/* 🟢 เพิ่ม id และ name ให้ช่องวันที่เริ่มต้น */}
                   <input 
                       type="date" 
                       id="startDate"
@@ -259,7 +301,6 @@ export default function TransactionLogPage() {
                       onChange={e => setStartDate(e.target.value)} 
                   />
                   <span className="text-slate-400 font-bold">-</span>
-                  {/* 🟢 เพิ่ม id และ name ให้ช่องวันที่สิ้นสุด */}
                   <input 
                       type="date" 
                       id="endDate"
@@ -298,19 +339,19 @@ export default function TransactionLogPage() {
                         const hasAnomaly = tx.anomalies.length > 0;
 
                         return (
-                        <tr key={tx.transaction_id || idx} className={`transition-colors group ${hasAnomaly ? 'bg-rose-50/50 hover:bg-rose-100/50' : 'hover:bg-slate-50'}`}>
+                        // 🟢 2. React Key Fix: รวบ id เข้ากับ index เพื่อการันตีไม่ให้ซ้ำกัน 100%
+                        <tr key={`${tx.transaction_id}-${idx}`} className={`transition-colors group ${hasAnomaly ? 'bg-rose-50/50 hover:bg-rose-100/50' : 'hover:bg-slate-50'}`}>
                             <td className="p-4">
-    <div className="font-bold text-slate-700 flex items-center gap-2">
-        {/* 🚨 แจ้งเตือน AI Anomaly */}
-        {hasAnomaly && (
-            <span title={tx.anomalies.join('\n')} className="flex items-center">
-                <AlertOctagon size={16} className="text-rose-500 animate-pulse" />
-            </span>
-        )}
-        {tx.dateObj.toLocaleDateString('th-TH')}
-    </div>
-    <div className="text-xs text-slate-400 mt-0.5 ml-6">{tx.dateObj.toLocaleTimeString('th-TH')} น.</div>
-</td>
+                                <div className="font-bold text-slate-700 flex items-center gap-2">
+                                    {hasAnomaly && (
+                                        <span title={tx.anomalies.join('\n')} className="flex items-center">
+                                            <AlertOctagon size={16} className="text-rose-500 animate-pulse" />
+                                        </span>
+                                    )}
+                                    {tx.dateObj.toLocaleDateString('th-TH')}
+                                </div>
+                                <div className="text-xs text-slate-400 mt-0.5 ml-6">{tx.dateObj.toLocaleTimeString('th-TH')} น.</div>
+                            </td>
                             <td className="p-4">
                                 <span className={`text-[10px] font-black px-2.5 py-1 rounded-md uppercase tracking-wider ${
                                     tx.transaction_type === 'INBOUND' ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' :
@@ -327,7 +368,6 @@ export default function TransactionLogPage() {
                             </td>
                             <td className="p-4">
                                 <div className="font-bold text-slate-800 truncate max-w-[200px]" title={tx.product_name}>{tx.product_name}</div>
-                                {/* 🗺️ Product Journey Button */}
                                 <button onClick={() => openJourney(tx)} className="text-[10px] font-mono mt-1 flex items-center gap-1 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded border border-indigo-100 transition-colors" title="คลิกเพื่อดูเส้นทางสินค้านี้">
                                     <GitBranch size={10}/> {tx.product_id}
                                 </button>
@@ -342,7 +382,6 @@ export default function TransactionLogPage() {
                                 {hasAnomaly ? <span className="text-rose-600 font-bold">{tx.remarks || 'ตรวจพบความผิดปกติ'}</span> : (tx.remarks || '-')}
                             </td>
                             <td className="p-4 text-center">
-                                {/* 🧾 e-Receipt Button */}
                                 <button onClick={() => setReceiptModal(tx)} className="p-2 bg-white border border-slate-200 rounded-lg text-slate-500 hover:text-indigo-600 hover:border-indigo-300 hover:bg-indigo-50 transition-colors shadow-sm" title="View e-Receipt">
                                     <Eye size={16}/>
                                 </button>
@@ -365,7 +404,7 @@ export default function TransactionLogPage() {
       </div>
 
       {/* ======================================================= */}
-      {/* 🧾 MODAL: DIGITAL E-RECEIPT (สลิปดิจิทัล) */}
+      {/* 🧾 MODAL: DIGITAL E-RECEIPT */}
       {/* ======================================================= */}
       {receiptModal && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -437,7 +476,7 @@ export default function TransactionLogPage() {
       )}
 
       {/* ======================================================= */}
-      {/* 🗺️ MODAL: PRODUCT JOURNEY (ไทม์ไลน์สินค้า) */}
+      {/* 🗺️ MODAL: PRODUCT JOURNEY */}
       {/* ======================================================= */}
       {journeyModal && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">

@@ -5,11 +5,12 @@ import "./globals.css";
 import Link from "next/link";
 import { useState, useEffect, useRef } from "react";
 import { useRouter, usePathname } from 'next/navigation';
-// ⚠️ ตรวจสอบ Path ของ supabase ให้ตรงกับโปรเจกต์ของคุณ
 import { supabase } from "../supabaseClient"; 
 import { 
   Database, Activity, Package, PackagePlus, Truck, Settings, 
-  Search, Bell, User, History, X, AlertTriangle, Users, QrCode, BrainCircuit, RefreshCw, Menu, Store 
+  Search, Bell, User, History, X, AlertTriangle, QrCode, 
+  BrainCircuit, RefreshCw, Menu, Store, TrendingUp, 
+  ChevronDown, ArrowRightLeft, LineChart, LayoutDashboard
 } from "lucide-react";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -18,7 +19,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const router = useRouter();
   const pathname = usePathname();
   
-  // 🟢 เพิ่ม State สำหรับเก็บ Role
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
 
@@ -34,7 +34,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
 
-  // --- 🛡️ เช็คสถานะการเข้าสู่ระบบ & ดึงสิทธิ์ (Role) ---
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -43,45 +42,25 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         router.push('/login');
       } else if (session) {
         setIsAuthenticated(true);
-        
-        // 🟢 ดึง Role จาก Database
-        const { data: roleData } = await supabase
-          .from('user_roles')
-          .select('role')
-          .eq('user_id', session.user.id)
-          .single();
-          
+        const { data: roleData } = await supabase.from('user_roles').select('role').eq('user_id', session.user.id).single();
         const role = roleData?.role || 'VIEWER';
         setUserRole(role);
 
-        // 🔴 Route Protection: บล็อคการเข้าหน้าเว็บตามสิทธิ์
         if (role === 'VIEWER') {
-          // VIEWER ห้ามเข้าหน้าเหล่านี้
-          const blockedForViewer = ['/inbound', '/outbound', '/transactions', '/cycle-count', '/print-labels', '/planning', '/dev-tools'];
-          if (blockedForViewer.some(route => pathname.startsWith(route))) {
-            router.push('/dashboard'); // เตะกลับ Dashboard
-          }
+          const blockedForViewer = ['/inbound', '/outbound', '/transactions', '/cycle-count', '/print-labels', '/planning', '/forecast-studio', '/dev-tools'];
+          if (blockedForViewer.some(route => pathname.startsWith(route))) router.push('/dashboard'); 
         } else if (role === 'STAFF') {
-          // STAFF ห้ามเข้า Dev Tools
-          if (pathname.startsWith('/dev-tools')) {
-            router.push('/dashboard');
-          }
+          if (pathname.startsWith('/dev-tools')) router.push('/dashboard');
         }
       }
     };
-    
     checkAuth();
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!session && pathname !== '/login') {
-        router.push('/login');
-      }
+      if (!session && pathname !== '/login') router.push('/login');
     });
-
     return () => subscription.unsubscribe();
   }, [pathname, router]);
 
-  // --- ปิด Dropdown เมื่อคลิกที่อื่น ---
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) setShowSearchDropdown(false);
@@ -91,27 +70,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // --- 🔔 ระบบแจ้งเตือน (โหลดเฉพาะตอน Login แล้ว) ---
   useEffect(() => {
     if (!isAuthenticated) return;
-
     const fetchNotifs = async () => {
       try {
         const { data: prods } = await supabase.from('master_products').select('product_id, product_name, min_stock, status').eq('status', 'ACTIVE');
         const { data: lots } = await supabase.from('inventory_lots').select('product_id, quantity');
-        
         const stockMap: any = {};
         (lots || []).forEach(l => stockMap[l.product_id] = (stockMap[l.product_id] || 0) + Number(l.quantity));
 
         const alerts = (prods || [])
             .filter(p => (stockMap[p.product_id] || 0) <= (p.min_stock || 0))
             .map(p => ({
-                id: p.product_id, 
-                title: 'Low Stock Warning', 
-                message: `สินค้า ${p.product_id} (${p.product_name}) เหลือ ${stockMap[p.product_id] || 0} ชิ้น (เกณฑ์ ${p.min_stock})`, 
-                type: 'WARNING'
+                id: p.product_id, title: 'Low Stock Warning', 
+                message: `สินค้า ${p.product_id} (${p.product_name}) เหลือ ${stockMap[p.product_id] || 0} ชิ้น (เกณฑ์ ${p.min_stock})`, type: 'WARNING'
             }));
-        
         setTotalAlerts(alerts.length);
         setNotifications(alerts.slice(0, 20)); 
       } catch (error) { console.error(error); }
@@ -121,14 +94,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return () => clearInterval(interval);
   }, [isAuthenticated]);
 
-  // --- 🔍 ระบบ Deep Search ---
   useEffect(() => {
     if (!searchQuery.trim() || !isAuthenticated) {
       setSearchResults({ products: [], vendors: [] });
-      setIsSearching(false);
-      return;
+      setIsSearching(false); return;
     }
-    
     const delayDebounce = setTimeout(async () => {
       setIsSearching(true);
       try {
@@ -141,7 +111,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       } catch (error) { console.error(error); }
       setIsSearching(false);
     }, 400); 
-
     return () => clearTimeout(delayDebounce);
   }, [searchQuery, isAuthenticated]);
 
@@ -153,7 +122,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const isLoginPage = pathname === '/login';
 
-  // 🟢 รอโหลด Role ให้เสร็จก่อนโชว์หน้าเว็บ (ป้องกันเว็บกระพริบเห็นเมนูที่ไม่มีสิทธิ์)
   if ((isAuthenticated === null || (isAuthenticated && !userRole)) && !isLoginPage) {
       return (
         <html lang="en">
@@ -185,35 +153,45 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </div>
               </Link>
 
-              {/* 🟢 เมนูตรงกลาง (ซ่อนตาม Role) */}
-              <div className="hidden lg:flex items-center gap-1 flex-1 justify-start xl:justify-center overflow-x-auto whitespace-nowrap px-2 scroll-smooth [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden mask-image-fade">
+              {/* ========================================================= */}
+              {/* 💻 DESKTOP MENU (GROUPED DROPDOWNS) */}
+              {/* ========================================================= */}
+              <div className="hidden lg:flex items-center flex-1 justify-start xl:justify-center px-2">
                 
-                <NavItem href="/dashboard" icon={<Activity size={16} />} label="Dashboard" />           
-                <NavItem href="/warehouse" icon={<Package size={16} />} label="Inventory" />
+                <NavItem href="/dashboard" icon={<LayoutDashboard size={16} />} label="Dashboard" />           
                 
-                {/* 🔴 ซ่อนจาก VIEWER */}
+                {/* 📦 กลุ่มคลังสินค้า */}
+                <NavDropdown title="Inventory" icon={<Package size={16} />}>
+                  <DropdownItem href="/warehouse" icon={<Package size={16} />} label="Stock Balance" />
+                  {userRole !== 'VIEWER' && (
+                    <>
+                      <DropdownItem href="/cycle-count" icon={<RefreshCw size={16} />} label="Cycle Count" />
+                      <DropdownItem href="/print-labels" icon={<QrCode size={16} />} label="Print Labels" />
+                    </>
+                  )}
+                </NavDropdown>
+                
+                {/* 🔄 กลุ่มการทำรายการ (ซ่อนถ้าเป็น VIEWER) */}
                 {userRole !== 'VIEWER' && (
-                  <>
-                    <NavItem href="/inbound" icon={<PackagePlus size={16} />} label="Inbound" />
-                    <NavItem href="/outbound" icon={<Truck size={16} />} label="Outbound" />
-                    <NavItem href="/transactions" icon={<History size={16} />} label="Logs" />
-                  </>
+                  <NavDropdown title="Operations" icon={<ArrowRightLeft size={16} />}>
+                    <DropdownItem href="/inbound" icon={<PackagePlus size={16} />} label="Inbound (รับเข้า)" />
+                    <DropdownItem href="/outbound" icon={<Truck size={16} />} label="Outbound (จ่ายออก)" />
+                    <DropdownItem href="/transactions" icon={<History size={16} />} label="Transactions Log" />
+                  </NavDropdown>
                 )}
                 
-                <div className="w-[1px] h-5 bg-slate-700/50 mx-2 shrink-0"></div>
+                {/* 📈 กลุ่มรายงานและวางแผน */}
+                <NavDropdown title="Analytics" icon={<LineChart size={16} />}>
+                  <DropdownItem href="/branch-report" icon={<Store size={16} />} label="Branch Report" />
+                  {userRole !== 'VIEWER' && (
+                    <>
+                      <DropdownItem href="/planning" icon={<BrainCircuit size={16} />} label="Smart Planning" />
+                      <DropdownItem href="/forecast-studio" icon={<TrendingUp size={16} />} label="Forecast Studio" />
+                    </>
+                  )}
+                </NavDropdown>
 
-                <NavItem href="/branch-report" icon={<Store size={16} />} label="Branch Report" />
-                
-                {/* 🔴 ซ่อนจาก VIEWER */}
-                {userRole !== 'VIEWER' && (
-                  <>
-                    <NavItem href="/cycle-count" icon={<RefreshCw size={16} />} label="Cycle Count" />
-                    <NavItem href="/print-labels" icon={<QrCode size={16} />} label="Labels" />
-                    <NavItem href="/planning" icon={<BrainCircuit size={16} />} label="Planning" />
-                  </>
-                )}
-
-                {/* 🔴 โชว์ให้ ADMIN คนเดียวเท่านั้น */}
+                {/* ⚙️ กลุ่ม Admin เท่านั้น */}
                 {userRole === 'ADMIN' && (
                   <>
                     <div className="w-[1px] h-5 bg-slate-700/50 mx-2 shrink-0"></div>
@@ -309,46 +287,51 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </div>
             </nav>
 
-            {/* --- MOBILE DROPDOWN (ซ่อนตาม Role ด้วย) --- */}
+            {/* ========================================================= */}
+            {/* 📱 MOBILE MENU (ACCORDION STYLE) */}
+            {/* ========================================================= */}
             {isMobileMenuOpen && (
                 <>
                   <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-40 lg:hidden" onClick={() => setIsMobileMenuOpen(false)}></div>
-                  <div className="lg:hidden absolute top-full left-2 right-2 sm:left-4 sm:right-4 mt-2 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl p-4 flex flex-col gap-1.5 z-50 max-h-[75vh] overflow-y-auto">
-                        <>
-                            <div className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest px-2 pb-1 mt-1">Core Operations</div>
-                            <MobileNavItem href="/dashboard" icon={<Activity size={18}/>} label="Dashboard" onClick={() => setIsMobileMenuOpen(false)}/>
-                            <MobileNavItem href="/warehouse" icon={<Package size={18}/>} label="Inventory" onClick={() => setIsMobileMenuOpen(false)}/>
-                            
+                  <div className="lg:hidden absolute top-full left-2 right-2 sm:left-4 sm:right-4 mt-2 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl p-3 flex flex-col z-50 max-h-[75vh] overflow-y-auto">
+                        
+                        <MobileNavItem href="/dashboard" icon={<LayoutDashboard size={18}/>} label="Dashboard" onClick={() => setIsMobileMenuOpen(false)}/>
+                        
+                        <MobileNavGroup title="Inventory" icon={<Package size={18}/>}>
+                            <MobileNavItem href="/warehouse" icon={<Package size={16}/>} label="Stock Balance" onClick={() => setIsMobileMenuOpen(false)}/>
                             {userRole !== 'VIEWER' && (
                               <>
-                                <MobileNavItem href="/inbound" icon={<PackagePlus size={18}/>} label="Inbound" onClick={() => setIsMobileMenuOpen(false)}/>
-                                <MobileNavItem href="/outbound" icon={<Truck size={18}/>} label="Outbound" onClick={() => setIsMobileMenuOpen(false)}/>
-                                <MobileNavItem href="/transactions" icon={<History size={18}/>} label="Logs" onClick={() => setIsMobileMenuOpen(false)}/>
+                                <MobileNavItem href="/cycle-count" icon={<RefreshCw size={16}/>} label="Cycle Count" onClick={() => setIsMobileMenuOpen(false)}/>
+                                <MobileNavItem href="/print-labels" icon={<QrCode size={16}/>} label="Print Labels" onClick={() => setIsMobileMenuOpen(false)}/>
                               </>
                             )}
-                            
-                            <div className="h-px bg-slate-800/60 my-2 mx-2"></div>
-                            
-                            <div className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest px-2 pb-1">Reports & Tools</div>
-                            <MobileNavItem href="/branch-report" icon={<Store size={18}/>} label="Branch Report" onClick={() => setIsMobileMenuOpen(false)}/>
-                            
+                        </MobileNavGroup>
+
+                        {userRole !== 'VIEWER' && (
+                          <MobileNavGroup title="Operations" icon={<ArrowRightLeft size={18}/>}>
+                              <MobileNavItem href="/inbound" icon={<PackagePlus size={16}/>} label="Inbound" onClick={() => setIsMobileMenuOpen(false)}/>
+                              <MobileNavItem href="/outbound" icon={<Truck size={16}/>} label="Outbound" onClick={() => setIsMobileMenuOpen(false)}/>
+                              <MobileNavItem href="/transactions" icon={<History size={16}/>} label="Transactions Log" onClick={() => setIsMobileMenuOpen(false)}/>
+                          </MobileNavGroup>
+                        )}
+
+                        <MobileNavGroup title="Analytics" icon={<LineChart size={18}/>}>
+                            <MobileNavItem href="/branch-report" icon={<Store size={16}/>} label="Branch Report" onClick={() => setIsMobileMenuOpen(false)}/>
                             {userRole !== 'VIEWER' && (
                               <>
-                                <MobileNavItem href="/cycle-count" icon={<RefreshCw size={18}/>} label="Cycle Count" onClick={() => setIsMobileMenuOpen(false)}/>
-                                <MobileNavItem href="/print-labels" icon={<QrCode size={18}/>} label="Labels" onClick={() => setIsMobileMenuOpen(false)}/>
-                                <MobileNavItem href="/planning" icon={<BrainCircuit size={18}/>} label="Planning" onClick={() => setIsMobileMenuOpen(false)}/>
+                                <MobileNavItem href="/planning" icon={<BrainCircuit size={16}/>} label="Smart Planning" onClick={() => setIsMobileMenuOpen(false)}/>
+                                <MobileNavItem href="/forecast-studio" icon={<TrendingUp size={16}/>} label="Forecast Studio" onClick={() => setIsMobileMenuOpen(false)}/>
                               </>
                             )}
+                        </MobileNavGroup>
 
-                            <div className="h-px bg-slate-800/60 my-2 mx-2"></div>
+                        <div className="h-px bg-slate-800/60 my-2 mx-2"></div>
 
-                            <div className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest px-2 pb-1">System</div>
-                            <MobileNavItem href="/settings" icon={<User size={18}/>} label="Profile & Settings" onClick={() => setIsMobileMenuOpen(false)}/>
-                            
-                            {userRole === 'ADMIN' && (
-                              <MobileNavItem href="/dev-tools" icon={<Settings size={18}/>} label="Dev Tools" isDev onClick={() => setIsMobileMenuOpen(false)}/>
-                            )}
-                        </>
+                        <MobileNavItem href="/settings" icon={<User size={18}/>} label="Profile & Settings" onClick={() => setIsMobileMenuOpen(false)}/>
+                        
+                        {userRole === 'ADMIN' && (
+                          <MobileNavItem href="/dev-tools" icon={<Settings size={18}/>} label="Dev Tools" isDev onClick={() => setIsMobileMenuOpen(false)}/>
+                        )}
                   </div>
                 </>
             )}
@@ -362,14 +345,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </main>
 
-        <style dangerouslySetInnerHTML={{__html: `
-          .mask-image-fade { mask-image: linear-gradient(to right, black 90%, transparent 100%); -webkit-mask-image: linear-gradient(to right, black 90%, transparent 100%); }
-        `}} />
       </body>
     </html>
   );
 }
 
+// --- DESKTOP COMPONENTS ---
 function NavItem({ href, icon, label, isDev = false }: { href: string, icon: React.ReactNode, label: string, isDev?: boolean }) {
   return (
     <Link href={href} className="group relative px-3 py-2 rounded-xl flex items-center gap-1.5 overflow-hidden transition-all duration-300 hover:bg-white/5 shrink-0">
@@ -383,11 +364,61 @@ function NavItem({ href, icon, label, isDev = false }: { href: string, icon: Rea
   );
 }
 
+function NavDropdown({ title, icon, children }: { title: string, icon: React.ReactNode, children: React.ReactNode }) {
+  return (
+    <div className="relative group px-1">
+      <button className="flex items-center gap-1.5 px-3 py-2 text-slate-400 group-hover:text-cyan-300 transition-all duration-300 rounded-xl group-hover:bg-white/5 cursor-pointer outline-none">
+        <div className="transition-transform duration-300 group-hover:scale-110 group-hover:drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]">{icon}</div>
+        <span className="text-[13px] font-semibold tracking-wide">{title}</span>
+        <ChevronDown size={14} className="ml-0.5 opacity-70 group-hover:rotate-180 transition-transform duration-300" />
+        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-0 h-[2px] opacity-0 group-hover:w-[calc(100%-24px)] group-hover:opacity-100 transition-all duration-300 ease-out shadow-[0_0_8px_rgba(34,211,238,0.8)] bg-cyan-400"></div>
+      </button>
+      
+      {/* Dropdown Panel */}
+      <div className="absolute top-full left-0 pt-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 transform translate-y-2 group-hover:translate-y-0 z-50 min-w-[200px]">
+        <div className="bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.5)] p-2 flex flex-col gap-1">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DropdownItem({ href, icon, label, isDev = false }: { href: string, icon: React.ReactNode, label: string, isDev?: boolean }) {
+  return (
+    <Link href={href} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 ${isDev ? 'hover:bg-fuchsia-500/10 text-slate-400 hover:text-fuchsia-300' : 'hover:bg-cyan-500/10 text-slate-400 hover:text-cyan-300'} hover:pl-4`}>
+      <div className={`${isDev ? 'text-fuchsia-500' : 'text-cyan-500'}`}>{icon}</div>
+      <span className="text-sm font-medium tracking-wide">{label}</span>
+    </Link>
+  );
+}
+
+// --- MOBILE COMPONENTS ---
+function MobileNavGroup({ title, icon, children }: { title: string, icon: React.ReactNode, children: React.ReactNode }) {
+  const [isOpen, setIsOpen] = useState(false);
+  return (
+    <div className="flex flex-col mb-1">
+      <button onClick={() => setIsOpen(!isOpen)} className={`flex items-center justify-between p-3 rounded-xl transition-colors outline-none ${isOpen ? 'bg-cyan-500/10 text-cyan-400' : 'text-slate-300 hover:bg-white/5'}`}>
+        <div className="flex items-center gap-3">
+          <div className={`${isOpen ? 'text-cyan-400' : 'text-slate-500'}`}>{icon}</div>
+          <span className="font-bold text-sm tracking-wide">{title}</span>
+        </div>
+        <ChevronDown size={16} className={`transition-transform duration-300 ${isOpen ? 'rotate-180 text-cyan-400' : 'opacity-50'}`} />
+      </button>
+      <div className={`overflow-hidden transition-all duration-300 ${isOpen ? 'max-h-[500px] opacity-100 mt-1' : 'max-h-0 opacity-0'}`}>
+        <div className="flex flex-col gap-1 pl-4 border-l-2 border-slate-800 ml-5 py-1">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MobileNavItem({ href, icon, label, isDev = false, onClick }: any) {
     return (
-        <Link href={href} onClick={onClick} className={`flex items-center gap-3 p-3 rounded-xl transition-all duration-200 ${isDev ? 'text-fuchsia-400 hover:bg-fuchsia-500/10 hover:pl-4' : 'text-slate-300 hover:text-cyan-400 hover:bg-cyan-500/10 hover:pl-4'}`}>
-            <div className={`${isDev ? 'text-fuchsia-400' : 'text-cyan-500'}`}>{icon}</div>
-            <span className="font-bold text-sm tracking-wide">{label}</span>
+        <Link href={href} onClick={onClick} className={`flex items-center gap-3 p-3 rounded-xl transition-all duration-200 ${isDev ? 'text-slate-400 hover:text-fuchsia-300 hover:bg-fuchsia-500/10' : 'text-slate-400 hover:text-cyan-300 hover:bg-cyan-500/10'} hover:pl-4`}>
+            <div className={`${isDev ? 'text-fuchsia-500' : 'text-cyan-500'}`}>{icon}</div>
+            <span className="font-medium text-sm tracking-wide">{label}</span>
         </Link>
     );
 }

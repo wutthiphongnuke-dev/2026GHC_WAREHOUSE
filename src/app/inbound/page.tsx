@@ -514,7 +514,19 @@ const Inbound = () => {
             await supabase.from('purchase_orders').update({ status: newStatus }).eq('po_number', selectedPO.po_number);
         }
 
+        // 🟢 เสนอให้พิมพ์ Label และส่งมอบข้อมูลไปหน้า Print (Enterprise Feature)
         if (window.confirm("🎉 รับเข้าสำเร็จ!\n\nต้องการไปที่หน้า [Print Labels] เพื่อพิมพ์บาร์โค้ดสำหรับสินค้าล็อตนี้เลยหรือไม่?")) {
+            // สร้างแพ็กเกจข้อมูลเตรียมส่งไปหน้าปริ้นท์
+            const printJobs = cart.map((item: any) => ({
+                product_id: item.productId,
+                product_name: item.productName,
+                copies: item.qtyReceived ? parseInt(item.qtyReceived) : 1, // โหลดจำนวนดวง = จำนวนที่รับเข้า
+                lotNo: '', 
+                expDate: item.expDate || '',
+                location: item.location || ''
+            }));
+            // ฝากข้อมูลไว้ใน Session Storage
+            sessionStorage.setItem('wms_auto_print_queue', JSON.stringify(printJobs));
             window.location.href = '/print-labels';
         }
 
