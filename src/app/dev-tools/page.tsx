@@ -34,8 +34,8 @@ export default function DevToolsPage() {
               { key: 'product_name', label: 'Product Name' },
               { key: 'category', label: 'Category' },
               { key: 'base_uom', label: 'Base Unit' },
-              { key: 'default_location', label: 'Location' }, // 🟢 เพิ่ม Location ให้เห็นในตาราง
-              { key: 'min_stock', label: 'Min Stock' },       // 🟢 เพิ่ม Min Stock
+              { key: 'default_location', label: 'Location' },
+              { key: 'min_stock', label: 'Min Stock' },       
               { key: 'status', label: 'Status' }
           ]
       },
@@ -79,8 +79,6 @@ export default function DevToolsPage() {
   // ==========================================
   // 📥 IMPORT / 📤 EXPORT & TEMPLATE
   // ==========================================
-  
-  // 🟢 ฟังก์ชันโหลด Template ตัวอย่าง
   const handleDownloadTemplate = () => {
       let templateData = {};
       
@@ -124,7 +122,6 @@ export default function DevToolsPage() {
             const pk = currentTabConfig?.pk || 'id';
             const cleanRows = rows.map(row => {
                 const cleanRow = { ...row };
-                // Type Casting ให้ถูกต้องก่อนส่งเข้า DB
                 if(cleanRow.standard_cost) cleanRow.standard_cost = parseFloat(cleanRow.standard_cost);
                 if(cleanRow.conversion_rate) cleanRow.conversion_rate = parseFloat(cleanRow.conversion_rate);
                 if(cleanRow.min_stock) cleanRow.min_stock = parseInt(cleanRow.min_stock);
@@ -133,20 +130,33 @@ export default function DevToolsPage() {
                 if(cleanRow.is_active === 'FALSE' || cleanRow.is_active === 'false' || cleanRow.is_active === false) cleanRow.is_active = false;
 
                 return cleanRow;
-            }).filter(row => row[pk]); // บังคับว่าต้องมีคอลัมน์ Primary Key
+            }).filter(row => row[pk]); 
 
-            if (cleanRows.length > 0) {
-                // Upsert จะทำการ Update ถ้ามี ID อยู่แล้ว และ Insert ถ้าเป็น ID ใหม่
-                const { error } = await supabase.from(activeTab).upsert(cleanRows, { onConflict: pk });
+            // Deduplication (กรองรหัสซ้ำ)
+            const uniqueMap = new Map();
+            cleanRows.forEach(row => {
+                uniqueMap.set(row[pk], row); 
+            });
+            const deduplicatedRows = Array.from(uniqueMap.values());
+
+            if (deduplicatedRows.length > 0) {
+                const { error } = await supabase.from(activeTab).upsert(deduplicatedRows, { onConflict: pk });
                 if (error) throw error;
-                alert(`✅ นำเข้าและอัปเดตข้อมูล ${cleanRows.length} รายการสำเร็จ!`); 
+                
+                const duplicateCount = cleanRows.length - deduplicatedRows.length;
+                let alertMsg = `✅ นำเข้าและอัปเดตข้อมูล ${deduplicatedRows.length} รายการสำเร็จ!`;
+                if (duplicateCount > 0) alertMsg += `\n(💡 กรองข้อมูลรหัสซ้ำกันออกไป ${duplicateCount} บรรทัด)`;
+                
+                alert(alertMsg); 
                 fetchData();
+            } else {
+                alert("⚠️ ไม่พบข้อมูลที่สามารถนำเข้าได้ กรุณาตรวจสอบคอลัมน์รหัส (ID)");
             }
         } catch (error: any) { alert("Import Error: " + error.message); }
         setLoading(false);
     };
     reader.readAsArrayBuffer(file);
-    event.target.value = null; // รีเซ็ต input file
+    event.target.value = null; 
   };
 
   const handleExport = () => {
@@ -158,7 +168,7 @@ export default function DevToolsPage() {
   };
 
   // ==========================================
-  // CRUD ACTIONS (Supabase)
+  // CRUD ACTIONS
   // ==========================================
   const handleDelete = async (id: string) => {
     if (!window.confirm("ยืนยันการลบข้อมูลนี้? (การลบ Master Data อาจส่งผลกระทบต่อ Transaction ที่อ้างอิงถึง)")) return;
@@ -179,12 +189,10 @@ export default function DevToolsPage() {
     const formData = new FormData(e.currentTarget);
     const payload: any = Object.fromEntries(formData.entries());
     
-    // Auto convert types
     if (payload.standard_cost) payload.standard_cost = parseFloat(payload.standard_cost as string);
     if (payload.conversion_rate) payload.conversion_rate = parseFloat(payload.conversion_rate as string);
     if (payload.min_stock) payload.min_stock = parseInt(payload.min_stock as string);
     
-    // Branch Active Checkbox
     if (activeTab === 'master_branches') {
         payload.is_active = payload.is_active === 'on' ? true : false;
     }
@@ -204,7 +212,6 @@ export default function DevToolsPage() {
     setSaveLoading(false);
   };
 
-  // --- RENDER HELPERS ---
   const filteredData = useMemo(() => {
       if (!searchTerm) return data;
       const lower = searchTerm.toLowerCase();
@@ -216,7 +223,6 @@ export default function DevToolsPage() {
 
   return (
     <div className="flex flex-col h-full bg-slate-50 font-sans">
-      {/* HEADER */}
       <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm z-10 flex-shrink-0">
         <div>
             <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-600 to-blue-600 flex items-center gap-2">
@@ -232,7 +238,6 @@ export default function DevToolsPage() {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-          {/* SIDEBAR MENU */}
           <div className="w-64 bg-white border-r border-slate-200 flex flex-col p-4 space-y-2 z-0">
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 px-2">Data Tables</div>
               {tabs.map(tab => (
@@ -250,10 +255,8 @@ export default function DevToolsPage() {
               </button>
           </div>
 
-          {/* MAIN CONTENT */}
           <div className="flex-1 p-6 flex flex-col overflow-hidden bg-slate-100">
               
-              {/* 🟢 Bulk Edit Info Banner */}
               <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-2xl mb-4 flex items-start gap-3 shadow-sm shrink-0">
                   <Info className="text-blue-500 shrink-0 mt-0.5" size={18}/>
                   <div className="text-sm">
@@ -263,7 +266,6 @@ export default function DevToolsPage() {
 
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col flex-1 overflow-hidden relative">
                   
-                  {/* Table Toolbar */}
                   <div className="p-4 border-b border-slate-100 flex flex-wrap justify-between items-center gap-4 bg-slate-50">
                       <div className="relative w-full max-w-sm">
                           <Search className="absolute left-3 top-2.5 text-slate-400" size={18}/>
@@ -272,7 +274,6 @@ export default function DevToolsPage() {
                       </div>
                       
                       <div className="flex gap-2 flex-wrap">
-                          {/* 🟢 ปุ่มโหลด Template */}
                           <button onClick={handleDownloadTemplate} className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl font-bold hover:bg-emerald-100 text-sm shadow-sm transition-colors">
                               <FileSpreadsheet size={16}/> Template
                           </button>
@@ -290,7 +291,6 @@ export default function DevToolsPage() {
                       </div>
                   </div>
 
-                  {/* Data Table */}
                   <div className="flex-1 overflow-auto bg-white custom-scrollbar">
                       <table className="w-full text-left text-sm whitespace-nowrap">
                           <thead className="bg-slate-100/80 text-slate-500 font-bold uppercase text-[10px] tracking-wider sticky top-0 backdrop-blur-md z-10 shadow-sm border-b border-slate-200">
@@ -340,7 +340,6 @@ export default function DevToolsPage() {
                       </table>
                   </div>
                   
-                  {/* Pagination */}
                   <div className="p-3 border-t border-slate-200 bg-slate-50 flex justify-between items-center text-xs text-slate-500">
                       <div>Showing <b>{currentItems.length}</b> of <b>{filteredData.length}</b> records</div>
                       <div className="flex items-center gap-2">
