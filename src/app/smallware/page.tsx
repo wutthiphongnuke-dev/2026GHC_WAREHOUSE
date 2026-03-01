@@ -18,9 +18,9 @@ export default function SmallwareCatalog() {
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [categories, setCategories] = useState<string[]>([]);
   
-  // 🟢 Pagination States
+  // 🟢 1. ลดจำนวนต่อหน้าลงเหลือ 30 เพื่อให้ DOM ไม่หนัก ไถลื่นบนมือถือทุกรุ่น
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 50; // โชว์แค่ 50 รูปต่อหน้าเพื่อความลื่นไหล
+  const itemsPerPage = 30; 
   
   // Image Upload & Zoom States
   const [uploadingId, setUploadingId] = useState<string | null>(null);
@@ -38,7 +38,6 @@ export default function SmallwareCatalog() {
       init();
   }, []);
 
-  // 🟢 รีเซ็ตกลับไปหน้า 1 เสมอเวลาพิมพ์ค้นหา หรือเปลี่ยนหมวดหมู่
   useEffect(() => {
       setCurrentPage(1);
   }, [searchTerm, categoryFilter]);
@@ -73,7 +72,6 @@ export default function SmallwareCatalog() {
               };
           });
 
-          // 🟢 เรียงข้อมูลเอาตัวที่มีรูปขึ้นมาก่อน และเรียงตามชื่อ
           processed.sort((a, b) => {
               if (a.image_url && !b.image_url) return -1;
               if (!a.image_url && b.image_url) return 1;
@@ -95,15 +93,31 @@ export default function SmallwareCatalog() {
 
       setUploadingId(productId);
       try {
+          // ลบรูปเก่าทิ้ง (เพื่อประหยัดพื้นที่ Supabase)
+          const currentProduct = products.find(p => p.product_id === productId);
+          if (currentProduct && currentProduct.image_url) {
+              try {
+                  const urlParts = currentProduct.image_url.split('/');
+                  const oldFileName = urlParts[urlParts.length - 1]?.split('?')[0];
+                  if (oldFileName) {
+                      await supabase.storage.from('product_images').remove([oldFileName]);
+                  }
+              } catch (err) {
+                  console.warn("ไม่สามารถลบรูปเก่าได้:", err);
+              }
+          }
+
+          // 🟢 2. บีบอัดลงไปอีกขั้น: จำกัด 50KB และกว้างสุด 600px 
+          // (ภาพยังชัดระดับ HD แต่ขนาดเล็กลงครึ่งนึงจากเดิม)
           const options = {
-              maxSizeMB: 0.1, 
-              maxWidthOrHeight: 800, 
-              useWebWorker: true
+              maxSizeMB: 0.05, 
+              maxWidthOrHeight: 600, 
+              useWebWorker: true,
+              fileType: 'image/webp' // แปลงเป็น WebP (เล็กลงกว่า JPG มากๆ)
           };
           const compressedFile = await imageCompression(file, options);
 
-          const fileExt = file.name.split('.').pop();
-          const fileName = `${productId}-${Date.now()}.${fileExt}`;
+          const fileName = `${productId}-${Date.now()}.webp`;
 
           const { error: uploadError } = await supabase.storage
               .from('product_images')
@@ -128,14 +142,12 @@ export default function SmallwareCatalog() {
       e.target.value = ''; 
   };
 
-  // 🟢 Logic ค้นหาข้อมูล (หาจากข้อมูลทั้งหมดใน Memory รับรองว่าเจอชัวร์)
   const filteredProducts = products.filter(p => {
       const matchSearch = p.product_name.toLowerCase().includes(searchTerm.toLowerCase()) || p.product_id.toLowerCase().includes(searchTerm.toLowerCase());
       const matchCat = categoryFilter === 'ALL' || p.category === categoryFilter;
       return matchSearch && matchCat;
   });
 
-  // 🟢 Logic หั่นข้อมูลสำหรับแสดงผลในหน้านี้ (50 รายการ)
   const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
   const currentItems = filteredProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
@@ -194,7 +206,8 @@ export default function SmallwareCatalog() {
                                           <img 
                                               src={item.image_url} 
                                               alt={item.product_name} 
-                                              loading="lazy" // 🟢 สำคัญมาก! ทำให้เบราว์เซอร์ไม่โหลดรูปถ้ารูปยังไม่โชว์บนจอ
+                                              loading="lazy" 
+                                              decoding="async" // 🟢 3. เทคนิคนี้ช่วยให้เบราว์เซอร์ถอดรหัสรูปในแบคกราวด์ หน้าจอจะไม่ค้าง!
                                               className="w-full h-full object-cover group-hover/img:scale-105 transition-transform duration-500"
                                           />
                                           <button 
@@ -213,7 +226,7 @@ export default function SmallwareCatalog() {
 
                                   {userRole !== 'VIEWER' && (
                                       <label className={`absolute top-2 right-2 p-2 rounded-lg cursor-pointer shadow-lg transition-colors ${item.image_url ? 'bg-white/80 text-slate-700 hover:bg-white' : 'bg-amber-500 text-white hover:bg-amber-600'} ${uploadingId === item.product_id ? 'animate-pulse' : ''}`} title="อัปโหลด/เปลี่ยนรูปภาพ">
-                                          <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => handleImageUpload(e, item.product_id)} disabled={uploadingId === item.product_id}/>
+                                          <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, item.product_id)} disabled={uploadingId === item.product_id}/>
                                           {uploadingId === item.product_id ? <Activity size={16} className="animate-spin"/> : <Camera size={16}/>}
                                       </label>
                                   )}
@@ -244,7 +257,7 @@ export default function SmallwareCatalog() {
               )}
           </div>
 
-          {/* 🟢 PAGINATION CONTROLS */}
+          {/* PAGINATION CONTROLS */}
           {filteredProducts.length > 0 && (
               <div className="mt-4 pt-4 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-4 shrink-0">
                   <div className="text-xs text-slate-500 font-medium">

@@ -11,7 +11,7 @@ import {
   Search, Bell, User, History, X, AlertTriangle, QrCode, 
   BrainCircuit, RefreshCw, Menu, Store, TrendingUp, 
   ChevronDown, ArrowRightLeft, LineChart, LayoutDashboard,
-  Image as ImageIcon // 🟢 เพิ่ม Import ไอคอนรูปภาพ
+  Image as ImageIcon 
 } from "lucide-react";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -47,11 +47,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         const role = roleData?.role || 'VIEWER';
         setUserRole(role);
 
+        // 🟢 เพิ่มการบล็อก URL สำหรับ Advanced Dashboard ไม่ให้ระดับอื่นเข้าได้
         if (role === 'VIEWER') {
-          const blockedForViewer = ['/inbound', '/outbound', '/transactions', '/cycle-count', '/print-labels', '/planning', '/forecast-studio', '/dev-tools'];
+          const blockedForViewer = ['/inbound', '/outbound', '/transactions', '/cycle-count', '/print-labels', '/planning', '/forecast-studio', '/dev-tools', '/advanced-dashboard'];
           if (blockedForViewer.some(route => pathname.startsWith(route))) router.push('/dashboard'); 
         } else if (role === 'STAFF') {
-          if (pathname.startsWith('/dev-tools')) router.push('/dashboard');
+          const blockedForStaff = ['/dev-tools', '/advanced-dashboard'];
+          if (blockedForStaff.some(route => pathname.startsWith(route))) router.push('/dashboard');
         }
       }
     };
@@ -164,10 +166,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 {/* 📦 กลุ่มคลังสินค้า */}
                 <NavDropdown title="Inventory" icon={<Package size={16} />}>
                   <DropdownItem href="/warehouse" icon={<Package size={16} />} label="Stock Balance" />
-                  
-                  {/* 🟢 เพิ่มเมนู Visual Catalog */}
                   <DropdownItem href="/smallware" icon={<ImageIcon size={16} />} label="Visual Catalog (รูปภาพ)" />
-                  
                   {userRole !== 'VIEWER' && (
                     <>
                       <DropdownItem href="/cycle-count" icon={<RefreshCw size={16} />} label="Cycle Count" />
@@ -176,7 +175,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   )}
                 </NavDropdown>
                 
-                {/* 🔄 กลุ่มการทำรายการ (ซ่อนถ้าเป็น VIEWER) */}
+                {/* 🔄 กลุ่มการทำรายการ */}
                 {userRole !== 'VIEWER' && (
                   <NavDropdown title="Operations" icon={<ArrowRightLeft size={16} />}>
                     <DropdownItem href="/inbound" icon={<PackagePlus size={16} />} label="Inbound (รับเข้า)" />
@@ -200,6 +199,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 {userRole === 'ADMIN' && (
                   <>
                     <div className="w-[1px] h-5 bg-slate-700/50 mx-2 shrink-0"></div>
+                    {/* 🟢 เพิ่มเมนู Advanced Dashboard */}
+                    <NavItem href="/advanced-dashboard" icon={<Activity size={16} />} label="Adv. Dashboard" isDev />
                     <NavItem href="/dev-tools" icon={<Settings size={16} />} label="Dev Tools" isDev />
                   </>
                 )}
@@ -304,10 +305,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                         
                         <MobileNavGroup title="Inventory" icon={<Package size={18}/>}>
                             <MobileNavItem href="/warehouse" icon={<Package size={16}/>} label="Stock Balance" onClick={() => setIsMobileMenuOpen(false)}/>
-                            
-                            {/* 🟢 เพิ่มเมนู Visual Catalog */}
                             <MobileNavItem href="/smallware" icon={<ImageIcon size={16}/>} label="Visual Catalog (รูปภาพ)" onClick={() => setIsMobileMenuOpen(false)}/>
-                            
                             {userRole !== 'VIEWER' && (
                               <>
                                 <MobileNavItem href="/cycle-count" icon={<RefreshCw size={16}/>} label="Cycle Count" onClick={() => setIsMobileMenuOpen(false)}/>
@@ -338,8 +336,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
                         <MobileNavItem href="/settings" icon={<User size={18}/>} label="Profile & Settings" onClick={() => setIsMobileMenuOpen(false)}/>
                         
+                        {/* 🟢 เพิ่มเมนู Advanced Dashboard บนมือถือ สำหรับแอดมิน */}
                         {userRole === 'ADMIN' && (
-                          <MobileNavItem href="/dev-tools" icon={<Settings size={18}/>} label="Dev Tools" isDev onClick={() => setIsMobileMenuOpen(false)}/>
+                          <>
+                             <MobileNavItem href="/advanced-dashboard" icon={<Activity size={18}/>} label="Adv. Dashboard" isDev onClick={() => setIsMobileMenuOpen(false)}/>
+                             <MobileNavItem href="/dev-tools" icon={<Settings size={18}/>} label="Dev Tools" isDev onClick={() => setIsMobileMenuOpen(false)}/>
+                          </>
                         )}
                   </div>
                 </>
