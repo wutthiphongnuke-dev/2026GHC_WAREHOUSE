@@ -132,6 +132,7 @@ const Inbound = () => {
         const { data: vData } = await supabase.from('master_vendors').select('*');
         setVendors(vData || []);
         
+        // 🟢 ดึงข้อมูล shelf_position มาด้วย
         const { data: pData } = await supabase.from('master_products').select('*');
         setProducts(pData || []);
     } catch (error: any) { console.error("Error fetching master data:", error); } 
@@ -175,6 +176,7 @@ const Inbound = () => {
                 groupedPOs[poNo].lines.push({ 
                     po_number: String(poNo).trim(),
                     product_id: String(row['Item number'] || '').trim(), 
+                    // 🟢 รองรับทศนิยมตอนอ่านไฟล์ Excel
                     ordered_qty: parseFloat(row['Quantity']) || 0, 
                     received_qty: 0 
                 });
@@ -341,6 +343,8 @@ const Inbound = () => {
       const purchaseUnit = productInfo?.purchase_uom || baseUnit;
       const convRate = parseFloat(productInfo?.conversion_rate) || 1;
       const smartLocation = productInfo?.default_location || 'MAIN_WH';
+      // 🟢 เพิ่ม shelf_position ในตะกร้า
+      const shelfPosition = productInfo?.shelf_position || '-';
       const today = new Date().toISOString().split('T')[0];
 
       return {
@@ -356,6 +360,7 @@ const Inbound = () => {
         expDate: '', 
         productTemp: '',
         location: smartLocation, 
+        shelf_position: shelfPosition, // 🟢 ส่ง shelf ไปด้วย
         isAutoLocation: !!productInfo?.default_location,
         lotStatus: 'AVAILABLE',
         isCrossDock: false
@@ -392,6 +397,7 @@ const Inbound = () => {
     if (cart.length === 0) return alert("No items.");
     if (!formData.vendorId && activeTab === 'manual') return alert("Select Vendor.");
     
+    // 🟢 เปรียบเทียบด้วย parseFloat ป้องกัน Error
     const hasOverReceive = cart.some(item => parseFloat(item.qtyReceived) > parseFloat(item.qtyOrdered) && parseFloat(item.qtyOrdered) > 0);
     if (hasOverReceive) {
         if (!window.confirm("⚠️ แจ้งเตือน: มีรายการที่รับเข้า 'เกิน' กว่าจำนวนสั่งซื้อ (Over-receive) คุณต้องการยืนยันการรับเข้านี้หรือไม่?")) return;
@@ -416,6 +422,7 @@ const Inbound = () => {
         const newReceiptId = receiptData.receipt_id;
 
         for (const item of cart) {
+            // 🟢 รับค่าทศนิยม
             const rcvQty = parseFloat(item.qtyReceived) || 0;
             const convRate = parseFloat(item.conversionRate) || 1;
             const baseQty = rcvQty * convRate; 
@@ -514,18 +521,17 @@ const Inbound = () => {
             await supabase.from('purchase_orders').update({ status: newStatus }).eq('po_number', selectedPO.po_number);
         }
 
-        // 🟢 เสนอให้พิมพ์ Label และส่งมอบข้อมูลไปหน้า Print (Enterprise Feature)
         if (window.confirm("🎉 รับเข้าสำเร็จ!\n\nต้องการไปที่หน้า [Print Labels] เพื่อพิมพ์บาร์โค้ดสำหรับสินค้าล็อตนี้เลยหรือไม่?")) {
-            // สร้างแพ็กเกจข้อมูลเตรียมส่งไปหน้าปริ้นท์
             const printJobs = cart.map((item: any) => ({
                 product_id: item.productId,
                 product_name: item.productName,
-                copies: item.qtyReceived ? parseInt(item.qtyReceived) : 1, // โหลดจำนวนดวง = จำนวนที่รับเข้า
+                // 🟢 รองรับทศนิยมตอนส่งไปหน้าพิมพ์ (พิมพ์ 1 ดวง ถ้าจำนวนเป็น 0.5)
+                copies: item.qtyReceived ? Math.ceil(parseFloat(item.qtyReceived)) : 1, 
                 lotNo: '', 
                 expDate: item.expDate || '',
-                location: item.location || ''
+                // 🟢 แนบ Shelf Position ไปพิมพ์ด้วย
+                location: `${item.location} ${item.shelf_position !== '-' ? `(Shelf: ${item.shelf_position})` : ''}` 
             }));
-            // ฝากข้อมูลไว้ใน Session Storage
             sessionStorage.setItem('wms_auto_print_queue', JSON.stringify(printJobs));
             window.location.href = '/print-labels';
         }
@@ -607,7 +613,7 @@ const Inbound = () => {
                                     <div className="text-[10px] text-slate-400 font-mono mt-0.5">{po.vendor_id}</div>
                                 </div>
                                 <div className="flex justify-between items-center text-xs text-slate-500 border-t pt-2 mt-2">
-                                    <div className="flex items-center gap-1"><Package size={12}/> <span>{(po.po_lines || []).reduce((acc: number, i: any) => acc + ((i.ordered_qty||0) - (i.received_qty||0)), 0)} Left</span></div>
+                                    <div className="flex items-center gap-1"><Package size={12}/> <span>{(po.po_lines || []).reduce((acc: number, i: any) => acc + ((i.ordered_qty||0) - (i.received_qty||0)), 0).toLocaleString(undefined, {maximumFractionDigits: 2})} Left</span></div>
                                     <span className={`flex items-center gap-1 font-medium ${selectedPO?.po_number === po.po_number ? 'text-blue-600' : 'text-slate-400'}`}>Select <ArrowRight size={12}/></span>
                                 </div>
                             </div>
@@ -686,7 +692,7 @@ const Inbound = () => {
 
                     <div className="col-span-1 border-r border-slate-100"><label className="text-[10px] uppercase font-bold text-slate-400">Timing</label><div className={`font-bold text-sm ${deliveryTiming === 'LATE' ? 'text-red-500' : 'text-green-600'}`}>{deliveryTiming || '-'}</div></div>
                     
-                    <div className="col-span-1"><label className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1"><Thermometer size={12}/> Truck Temp (°C)</label><input type="number" disabled={isViewer} className="w-full border border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100" value={formData.truckTemp} onChange={(e: any) => setFormData((prev: FormDataState) => ({...prev, truckTemp: e.target.value}))}/></div>
+                    <div className="col-span-1"><label className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1"><Thermometer size={12}/> Truck Temp (°C)</label><input type="number" step="0.1" disabled={isViewer} className="w-full border border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-100" value={formData.truckTemp} onChange={(e: any) => setFormData((prev: FormDataState) => ({...prev, truckTemp: e.target.value}))}/></div>
                  </div>
                  
                  {activeTab === 'po' && selectedPO && !isViewer && (
@@ -712,7 +718,7 @@ const Inbound = () => {
                                 <th className="p-3 w-16 text-center">Temp</th>
                                 <th className="p-3 w-28">QC Status</th>
                                 <th className="p-3 w-28">MFG / EXP *</th>
-                                <th className="p-3 w-24">Location</th>
+                                <th className="p-3 w-24">Location <span className="text-[10px] text-blue-500">(Auto)</span></th>
                                 {!isViewer ? <th className="p-3 w-10"></th> : null}
                             </tr>
                         </thead>
@@ -728,15 +734,17 @@ const Inbound = () => {
                                         </div>
                                         <div className="text-xs text-slate-500 truncate w-32" title={item.productName}>{item.productName}</div>
                                     </td>
-                                    <td className="p-3 text-center pt-4 text-slate-400 font-mono">{item.qtyOrdered}</td>
+                                    {/* 🟢 แสดงเลขทศนิยม */}
+                                    <td className="p-3 text-center pt-4 text-slate-400 font-mono">{item.qtyOrdered.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                     <td className="p-3 text-center bg-yellow-50 border-x border-yellow-100">
-                                        <input type="number" disabled={isViewer} className="w-full p-2 border border-yellow-300 rounded text-center font-bold text-slate-800 focus:ring-2 focus:ring-yellow-500 outline-none disabled:bg-slate-100" value={item.qtyReceived} onChange={(e: any) => updateItem(idx, 'qtyReceived', e.target.value)}/>
+                                        {/* 🟢 เพิ่ม step="0.01" ให้ใส่ทศนิยมได้ */}
+                                        <input type="number" step="0.01" disabled={isViewer} className="w-full p-2 border border-yellow-300 rounded text-center font-bold text-slate-800 focus:ring-2 focus:ring-yellow-500 outline-none disabled:bg-slate-100" value={item.qtyReceived} onChange={(e: any) => updateItem(idx, 'qtyReceived', e.target.value)}/>
                                     </td>
                                     <td className="p-3 bg-blue-50/30 border-x border-blue-100">
                                         <div className="flex items-center gap-2 mb-2"><input type="text" disabled={isViewer} placeholder="Unit" className="w-16 p-1 border rounded text-xs bg-white text-center shadow-sm disabled:bg-slate-100" value={item.recvUnit} onChange={(e: any) => updateItem(idx, 'recvUnit', e.target.value)} /><span className="text-xs text-slate-400">x</span><input type="number" disabled={isViewer} placeholder="Rate" className="w-14 p-1 border rounded text-xs text-center bg-white shadow-sm disabled:bg-slate-100" value={item.conversionRate} onChange={(e: any) => updateItem(idx, 'conversionRate', e.target.value)} /></div>
-                                        <div className="flex items-center gap-2 bg-blue-100 px-2 py-1.5 rounded border border-blue-200 shadow-sm"><Box size={14} className="text-blue-500"/><div className="text-sm font-black text-blue-700">{(parseFloat(item.qtyReceived)||0) * (parseFloat(item.conversionRate)||1)}</div><div className="text-xs font-bold text-blue-600 uppercase">{item.baseUnit}</div></div>
+                                        <div className="flex items-center gap-2 bg-blue-100 px-2 py-1.5 rounded border border-blue-200 shadow-sm"><Box size={14} className="text-blue-500"/><div className="text-sm font-black text-blue-700">{((parseFloat(item.qtyReceived)||0) * (parseFloat(item.conversionRate)||1)).toLocaleString(undefined, {maximumFractionDigits: 2})}</div><div className="text-xs font-bold text-blue-600 uppercase">{item.baseUnit}</div></div>
                                     </td>
-                                    <td className="p-3"><input type="number" disabled={isViewer} placeholder="°C" className="w-full p-2 border rounded text-center focus:ring-1 focus:ring-blue-300 outline-none disabled:bg-slate-100" value={item.productTemp} onChange={(e: any) => updateItem(idx, 'productTemp', e.target.value)}/></td>
+                                    <td className="p-3"><input type="number" step="0.1" disabled={isViewer} placeholder="°C" className="w-full p-2 border rounded text-center focus:ring-1 focus:ring-blue-300 outline-none disabled:bg-slate-100" value={item.productTemp} onChange={(e: any) => updateItem(idx, 'productTemp', e.target.value)}/></td>
                                     
                                     <td className="p-3">
                                         <select 
@@ -755,9 +763,13 @@ const Inbound = () => {
                                         <input type="date" disabled={isViewer} className="w-full p-1 border border-slate-300 rounded text-xs text-red-400 outline-none focus:border-red-500 disabled:bg-slate-100" value={item.expDate} onChange={(e: any) => updateItem(idx, 'expDate', e.target.value)} title="EXP"/>
                                     </td>
                                     <td className="p-3">
-                                        <div className={`flex items-center gap-1 border rounded p-1 focus-within:ring-1 focus-within:ring-blue-300 relative ${isViewer ? 'bg-slate-100' : 'bg-white'}`}>
+                                        <div className={`flex items-center gap-1 border rounded p-1 focus-within:ring-1 focus-within:ring-blue-300 relative mb-1 ${isViewer ? 'bg-slate-100' : 'bg-white'}`}>
                                             {item.isAutoLocation ? <History size={12} className="text-blue-500"/> : <MapPin size={12} className="text-slate-400"/>}
-                                            <input type="text" disabled={isViewer} className="w-full text-xs outline-none bg-transparent" value={item.location} onChange={(e: any) => updateItem(idx, 'location', e.target.value)} />
+                                            <input type="text" disabled={isViewer} className="w-full text-xs outline-none bg-transparent" value={item.location} onChange={(e: any) => updateItem(idx, 'location', e.target.value)} title="Room Location" placeholder="Room..."/>
+                                        </div>
+                                        {/* 🟢 แสดง Shelf (ชั้นวาง) เพื่อให้รู้ว่ารับของมาแล้วจะเอาไปวางตรงไหน */}
+                                        <div className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1 py-0.5 rounded border border-slate-200 truncate" title={`Shelf: ${item.shelf_position}`}>
+                                            Shelf: {item.shelf_position}
                                         </div>
                                     </td>
                                     {!isViewer ? <td className="p-3 text-center pt-4"><button onClick={() => setCart(cart.filter((_,i)=>i!==idx))} className="text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button></td> : null}
@@ -769,7 +781,11 @@ const Inbound = () => {
             </div>
 
             <div className="bg-white p-4 border-t border-slate-200 flex justify-between items-center z-10 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
-                <div className="text-sm text-slate-500 flex gap-4"><span>SKUs: <span className="font-bold text-slate-800">{cart.length}</span></span><span>Total Base Qty: <span className="font-bold text-blue-600">{cart.reduce((a: number, b: any) => a + ((parseFloat(b.qtyReceived)||0)*(parseFloat(b.conversionRate)||1)), 0)}</span></span></div>
+                <div className="text-sm text-slate-500 flex gap-4">
+                    <span>SKUs: <span className="font-bold text-slate-800">{cart.length}</span></span>
+                    {/* 🟢 ปรับยอดรวมให้มีทศนิยม 2 ตำแหน่ง */}
+                    <span>Total Base Qty: <span className="font-bold text-blue-600">{cart.reduce((a: number, b: any) => a + ((parseFloat(b.qtyReceived)||0)*(parseFloat(b.conversionRate)||1)), 0).toLocaleString(undefined, {maximumFractionDigits: 2})}</span></span>
+                </div>
                 
                 {!isViewer && (
                   <button onClick={handleSubmit} disabled={loading || cart.length === 0} className={`px-8 py-3 rounded-lg text-white font-bold shadow-lg flex items-center gap-2 transition-all transform active:scale-95 ${loading ? 'bg-slate-300' : 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 shadow-blue-200'}`}>{loading ? 'Processing...' : <><CheckCircle size={20}/> Confirm Inbound</>}</button>

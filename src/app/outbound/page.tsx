@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabaseClient';
-import { ShoppingCart, Search, Plus, MapPin, Trash2, CheckCircle, UploadCloud, Store, FileText, AlertCircle, ScanBarcode, X, ChevronDown, ChevronUp, ShieldAlert, Camera } from 'lucide-react';
+import { ShoppingCart, Search, Plus, MapPin, Trash2, CheckCircle, UploadCloud, Store, FileText, AlertCircle, ScanBarcode, X, ChevronDown, ChevronUp, ShieldAlert, Camera, Layers } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface FormDataState {
@@ -79,7 +79,6 @@ export default function Outbound() {
   const scannerRef = useRef<any>(null);
   const lastScanRef = useRef<{code: string, time: number}>({code: '', time: 0});
   
-  // เก็บ State สต๊อกไว้ใน Ref เพื่อให้กล้องสแกนเข้าถึงข้อมูลล่าสุดได้โดยไม่ต้อง Render ใหม่
   const inventoryRef = useRef<any[]>([]);
   useEffect(() => { inventoryRef.current = inventory; }, [inventory]);
 
@@ -109,7 +108,6 @@ export default function Outbound() {
               scanner.render(
                   (decodedText: string) => {
                       const now = Date.now();
-                      // หน่วงเวลา 2 วินาที ป้องกันแสกนบาร์โค้ดเดิมรัวๆ 
                       if (lastScanRef.current.code === decodedText && (now - lastScanRef.current.time) < 2000) return;
                       lastScanRef.current = { code: decodedText, time: now };
                       
@@ -149,6 +147,8 @@ export default function Outbound() {
             current_qty: invMap[p.product_id]?.total_qty || 0,
             unit: p.base_uom || 'Piece',
             location: invMap[p.product_id] ? Array.from(invMap[p.product_id].locs).join(', ') : (p.default_location || 'MAIN'),
+            category: p.category || 'Uncategorized', // 🟢 เพิ่ม Category (Zone)
+            shelf_position: p.shelf_position || '-', // 🟢 เพิ่ม Shelf Position
             standard_cost: Number(p.standard_cost) || 0
         }));
 
@@ -165,7 +165,6 @@ export default function Outbound() {
       setShowBranchDropdown(false);
   };
 
-  // 🟢 ปรับให้ใช้ Functional Update state สำหรับตะกร้า เพื่อให้ทำงานคู่กับกล้องได้ดี
   const processBarcode = (barcode: string) => {
       const stockItem = inventoryRef.current.find(i => i.product_id.toLowerCase() === barcode.toLowerCase());
       if (!stockItem) {
@@ -177,12 +176,19 @@ export default function Outbound() {
           const existingIdx = prevCart.findIndex(c => c.productId === stockItem.product_id);
           if (existingIdx >= 0) {
               const newCart = [...prevCart];
-              newCart[existingIdx].qtyPicked = (parseInt(newCart[existingIdx].qtyPicked) || 0) + 1;
+              // 🟢 รองรับทศนิยมโดยเปลี่ยนเป็น parseFloat แต่เวลาสแกนจะ +1 ก่อน
+              newCart[existingIdx].qtyPicked = (parseFloat(newCart[existingIdx].qtyPicked) || 0) + 1;
               return newCart;
           } else {
               return [...prevCart, {
-                  productId: stockItem.product_id, productName: stockItem.product_name,
-                  qtyPicked: 1, stockQty: stockItem.current_qty, location: stockItem.location || '-', unit: stockItem.unit || 'Piece',
+                  productId: stockItem.product_id, 
+                  productName: stockItem.product_name,
+                  qtyPicked: 1, 
+                  stockQty: stockItem.current_qty, 
+                  location: stockItem.location || '-', 
+                  category: stockItem.category, // 🟢 แนบ Category (Zone)
+                  shelf_position: stockItem.shelf_position, // 🟢 แนบ Shelf
+                  unit: stockItem.unit || 'Piece',
                   standardCost: stockItem.standard_cost 
               }];
           }
@@ -200,7 +206,8 @@ export default function Outbound() {
       }
   };
 
-  const isCartValid = cart.every(item => parseInt(item.qtyPicked) > 0 && parseInt(item.qtyPicked) <= item.stockQty);
+  // 🟢 ตรวจสอบความถูกต้องโดยใช้ parseFloat
+  const isCartValid = cart.every(item => (parseFloat(item.qtyPicked) || 0) > 0 && (parseFloat(item.qtyPicked) || 0) <= item.stockQty);
 
   const handleSubmitScan = async () => {
     if (cart.length === 0) return alert("ตะกร้าว่างเปล่า");
@@ -244,7 +251,8 @@ export default function Outbound() {
 
         const linesToInsert = [];
         for (const item of cart) {
-            const qtyToDeduct = parseInt(item.qtyPicked);
+            // 🟢 แปลงจำนวนที่เบิกให้เป็นทศนิยม
+            const qtyToDeduct = parseFloat(item.qtyPicked);
             let remaining = qtyToDeduct;
             const { data: lots } = await supabase.from('inventory_lots').select('*').eq('product_id', item.productId).gt('quantity', 0).order('mfg_date', { ascending: true, nullsFirst: false });
             
@@ -272,7 +280,7 @@ export default function Outbound() {
             await supabase.from('transactions_log').insert([{
                 transaction_type: 'OUTBOUND', product_id: item.productId, quantity_change: -qtyToDeduct, balance_after: newBalance,
                 branch_id: formData.branchId, remarks: `จ่ายออกตามเอกสาร ${formData.docNo}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
-                metadata: { document_cost_amt: costAmt, unit_cost: item.standardCost }
+                metadata: { document_cost_amt: costAmt, unit_cost: item.standardCost, unit: item.unit } // 🟢 บันทึก unit เข้า metadata ให้ AI ตรวจจับได้
             }]);
 
             linesToInsert.push({
@@ -345,6 +353,7 @@ export default function Outbound() {
                             }
 
                             if (currentHeader && col0 && !col0.startsWith("TO-") && !col0.includes("Total") && String(row[3]) !== "Total") {
+                                // 🟢 เปลี่ยนจาก parseInt เป็น parseFloat ให้ไฟล์ Excel รองรับทศนิยม
                                 const qty = parseFloat(row[2]) || 0;
                                 if (qty > 0) {
                                     const stockItem = inventory.find(inv => inv.product_id === col0);
@@ -446,7 +455,6 @@ export default function Outbound() {
         for (const order of validOrdersToProcess) {
             const rawBranch = order.to_warehouse ? String(order.to_warehouse).trim() : '';
             
-            // 🟢 EXACT MATCH: ตรวจสอบการจับคู่สาขาแบบตรงเป๊ะเท่านั้น!
             const matchedBranch = branches.find(b => b.branch_id === rawBranch || b.branch_name === rawBranch);
             const targetBranchId = matchedBranch ? matchedBranch.branch_id : rawBranch;
 
@@ -490,7 +498,7 @@ export default function Outbound() {
                     balance_after: balanceByProduct[item.rm_code], branch_id: targetBranchId, 
                     remarks: `จ่ายออกตามเอกสาร ${order.to_number}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
                     transaction_date: txDate,
-                    metadata: { document_cost_amt: item.cost_amt, unit_cost: item.unit_cost }
+                    metadata: { document_cost_amt: item.cost_amt, unit_cost: item.unit_cost, unit: item.unit }
                 });
             }
         }
@@ -532,12 +540,10 @@ export default function Outbound() {
             <div className="w-full md:w-[400px] bg-white border-b md:border-b-0 md:border-r flex flex-col shrink-0">
                 <div className="p-4 flex flex-col h-full max-h-[40vh] md:max-h-full">
                     
-                    {/* 🟢 ส่วนสแกนบาร์โค้ด */}
                     <div className="mb-4 bg-slate-50 p-4 rounded-xl border-2 border-red-100 focus-within:border-red-500 focus-within:bg-red-50/20 transition-colors">
                         <div className="flex items-center justify-between mb-2">
                             <label className="text-xs font-bold text-red-500 uppercase flex items-center gap-1"><ScanBarcode size={14}/> Barcode Scanner</label>
                             
-                            {/* ปุ่มเปิดกล้อง */}
                             <button onClick={() => setIsCameraOpen(true)} className="flex items-center gap-1 bg-red-100 text-red-600 px-3 py-1.5 rounded-lg font-bold text-[10px] hover:bg-red-200 transition-colors shadow-sm">
                                 <Camera size={14}/> เปิดกล้องสแกน
                             </button>
@@ -570,9 +576,14 @@ export default function Outbound() {
                                 <div className="min-w-0 pr-2">
                                     <div className="font-bold text-sm text-slate-700 truncate">{p.product_id}</div>
                                     <div className="text-xs text-slate-500 truncate">{p.product_name}</div>
+                                    {/* 🟢 แสดง Zone และ Shelf ตรงนี้ให้พนักงานรู้ว่าของอยู่ไหน */}
+                                    <div className="text-[10px] text-cyan-600 mt-1 font-bold">
+                                        <Layers size={10} className="inline mr-1"/> Zone: {p.category} | Shelf: {p.shelf_position}
+                                    </div>
                                 </div>
                                 <div className="text-right flex flex-col items-end shrink-0">
-                                    <div className="text-xs font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded border border-green-100">Stock: {p.current_qty}</div>
+                                    {/* 🟢 รองรับทศนิยม */}
+                                    <div className="text-xs font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded border border-green-100">Stock: {p.current_qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
                                     <Plus size={16} className="text-slate-300 mt-2 group-hover:text-red-600"/>
                                 </div>
                             </div>
@@ -618,7 +629,7 @@ export default function Outbound() {
                                 <thead className="bg-slate-50 text-slate-600 font-bold uppercase text-xs border-b">
                                     <tr>
                                         <th className="p-3 w-10 text-center">#</th>
-                                        <th className="p-3 min-w-[200px]">รหัส / ชื่อสินค้า</th>
+                                        <th className="p-3 min-w-[200px]">รหัส / ชื่อสินค้า <span className="text-cyan-600 ml-1">(พิกัดหยิบของ)</span></th>
                                         <th className="p-3 w-32 text-center bg-slate-100">สต๊อกที่มี</th>
                                         <th className="p-3 w-40 text-center bg-red-50 text-red-700 border-x border-red-100">จ่ายออก</th>
                                         <th className="p-3 w-24 text-center">หน่วย</th>
@@ -629,18 +640,27 @@ export default function Outbound() {
                                     {cart.length === 0 ? (
                                         <tr><td colSpan={6} className="p-12 text-center text-slate-400 h-64"><ShoppingCart size={48} className="opacity-20 mb-4 mx-auto"/><p>แสกนสินค้า หรือเลือกจากรายการด้านซ้าย</p></td></tr>
                                     ) : cart.map((item, idx) => {
-                                        const isError = parseInt(item.qtyPicked) > item.stockQty;
+                                        // 🟢 ตรวจสอบ Error ด้วย parseFloat
+                                        const isError = (parseFloat(item.qtyPicked) || 0) > item.stockQty;
                                         return (
                                         <tr key={idx} className={`${isError ? 'bg-orange-50/50' : ''}`}>
                                             <td className="p-3 text-center">{idx + 1}</td>
                                             <td className="p-3">
                                                 <div className="font-bold">{item.productId}</div>
                                                 <div className="text-xs text-slate-500 truncate max-w-[250px]" title={item.productName}>{item.productName}</div>
+                                                
+                                                {/* 🟢 แสดง Zone / Shelf ให้เห็นชัดๆ ในตะกร้า */}
+                                                <div className="mt-1 flex items-center gap-1">
+                                                    <span className="text-[10px] font-bold text-cyan-600 bg-cyan-50 border border-cyan-100 px-1.5 py-0.5 rounded">Zone: {item.category}</span>
+                                                    <span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">Shelf: {item.shelf_position}</span>
+                                                </div>
+
                                                 {isError && <span className="text-[10px] text-orange-500 font-bold block mt-1">สต๊อกไม่พอ (ต้องบังคับตัด)</span>}
                                             </td>
-                                            <td className="p-3 text-center font-mono bg-slate-50">{item.stockQty}</td>
+                                            <td className="p-3 text-center font-mono bg-slate-50">{item.stockQty.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                             <td className="p-3 text-center bg-red-50/30 border-x">
-                                                <input type="number" className={`w-full p-2 border rounded-lg text-center font-bold outline-none ${isError ? 'border-orange-500 text-orange-600 bg-orange-50' : 'border-slate-300'}`} value={item.qtyPicked} onChange={e => {const newCart = [...cart]; newCart[idx].qtyPicked = e.target.value; setCart(newCart);}}/>
+                                                {/* 🟢 เพิ่ม step="0.01" ให้ใส่ทศนิยมได้ */}
+                                                <input type="number" step="0.01" className={`w-full p-2 border rounded-lg text-center font-bold outline-none ${isError ? 'border-orange-500 text-orange-600 bg-orange-50' : 'border-slate-300'}`} value={item.qtyPicked} onChange={e => {const newCart = [...cart]; newCart[idx].qtyPicked = e.target.value; setCart(newCart);}}/>
                                             </td>
                                             <td className="p-3 text-center text-xs uppercase">{item.unit}</td>
                                             <td className="p-3"><button onClick={() => setCart(cart.filter((_, i) => i !== idx))} className="text-slate-300 hover:text-red-500"><Trash2 size={18}/></button></td>
@@ -652,7 +672,8 @@ export default function Outbound() {
                     </div>
 
                     <div className="bg-white p-4 border-t flex flex-col md:flex-row justify-between items-center shadow-lg gap-4">
-                        <div className="text-sm font-bold">รวม: {cart.reduce((a,b) => a + (parseInt(b.qtyPicked)||0), 0)} ชิ้น</div>
+                        {/* 🟢 ปรับยอดรวมให้แสดงทศนิยม 2 ตำแหน่ง */}
+                        <div className="text-sm font-bold">รวม: {cart.reduce((a,b) => a + (parseFloat(b.qtyPicked)||0), 0).toLocaleString(undefined, {maximumFractionDigits: 2})} ชิ้น</div>
                         <button 
                             onClick={handleSubmitScan} 
                             disabled={loading || cart.length === 0} 
@@ -730,9 +751,9 @@ export default function Outbound() {
                                                             <tr key={idx} className={!order.isDuplicate && item.hasError ? 'bg-orange-50/50' : ''}>
                                                                 <td className="p-2 pl-4 font-bold">{item.rm_code}</td>
                                                                 <td className="p-2 text-xs text-slate-600 truncate max-w-[200px]" title={item.description}>{item.description}</td>
-                                                                <td className="p-2 text-center bg-slate-50 text-xs font-mono text-blue-600">{item.inStock}</td>
+                                                                <td className="p-2 text-center bg-slate-50 text-xs font-mono text-blue-600">{item.inStock?.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                                                 <td className="p-2 text-center font-bold">
-                                                                    <span className={!order.isDuplicate && item.hasError ? 'text-orange-600' : 'text-green-600'}>{item.qty}</span> <span className="text-[10px] text-slate-400">{item.unit}</span>
+                                                                    <span className={!order.isDuplicate && item.hasError ? 'text-orange-600' : 'text-green-600'}>{item.qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</span> <span className="text-[10px] text-slate-400">{item.unit}</span>
                                                                 </td>
                                                                 <td className="p-2 text-right text-slate-500">{item.cost_amt.toLocaleString()} ฿</td>
                                                             </tr>
@@ -760,7 +781,6 @@ export default function Outbound() {
                       <button onClick={() => setIsCameraOpen(false)} className="text-slate-400 hover:text-red-500 bg-white p-2 rounded-full shadow-sm"><X size={20}/></button>
                   </div>
                   <div className="p-4 bg-black flex justify-center items-center relative min-h-[300px]">
-                      {/* กล่องสำหรับให้ html5-qrcode เรนเดอร์กล้อง */}
                       <div id="reader" className="w-full bg-white rounded-xl overflow-hidden"></div>
                   </div>
                   <div className="p-4 text-center bg-slate-50 border-t">

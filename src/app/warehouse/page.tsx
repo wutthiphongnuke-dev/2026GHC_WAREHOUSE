@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '../../supabaseClient';
-import { Search, UploadCloud, Layers, ArrowUpDown, RefreshCw, Download, ChevronLeft, ChevronRight, Edit2, X, CheckCircle, Eye, EyeOff, Archive, History, FileText, AlertTriangle, FileSpreadsheet, Activity } from 'lucide-react';
+import { Search, UploadCloud, Layers, ArrowUpDown, RefreshCw, Download, ChevronLeft, ChevronRight, Edit2, X, CheckCircle, Eye, EyeOff, Archive, History, FileText, AlertTriangle, FileSpreadsheet, Activity, MapPin } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 export default function Inventory() {
@@ -12,7 +12,7 @@ export default function Inventory() {
 
   const [inventory, setInventory] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
-  const [syncProgress, setSyncProgress] = useState<string>(''); // 🟢 State แสดงความคืบหน้าการโหลด
+  const [syncProgress, setSyncProgress] = useState<string>(''); 
 
   // --- Settings & Filters ---
   const [searchTerm, setSearchTerm] = useState('');
@@ -66,6 +66,7 @@ export default function Inventory() {
     setSyncProgress('กำลังเตรียมข้อมูล...');
     try {
         const [prodRes, lotsRes] = await Promise.all([
+            // 🟢 ดึง shelf_position มาด้วย
             supabase.from('master_products').select('*'),
             supabase.from('inventory_lots').select('product_id, quantity, storage_location')
         ]);
@@ -82,7 +83,6 @@ export default function Inventory() {
             if (lot.storage_location) invMap[lot.product_id].locations.add(lot.storage_location);
         });
 
-        // กำหนดวันที่ย้อนหลัง
         const dateLimit = new Date();
         dateLimit.setDate(dateLimit.getDate() - calcPeriod + 1);
         dateLimit.setHours(0, 0, 0, 0); 
@@ -142,7 +142,7 @@ export default function Inventory() {
         const processed = allProducts.map((product: any) => {
             const stockInfo = invMap[product.product_id] || { total_qty: 0, locations: new Set() };
             const currentStock = stockInfo.total_qty;
-            const locationStr = stockInfo.locations.size > 0 ? Array.from(stockInfo.locations).join(', ') : (product.default_location || 'Main');
+            const locationStr = stockInfo.locations.size > 0 ? Array.from(stockInfo.locations).join(', ') : (product.default_location || '-');
 
             const stats = txStatsMap[product.product_id] || { in: 0, out: 0 };
             const totalIn = stats.in;
@@ -170,6 +170,8 @@ export default function Inventory() {
                 current_qty: currentStock,
                 unit: product.base_uom || 'Piece',
                 location: locationStr,
+                default_location: product.default_location || '-', 
+                shelf_position: product.shelf_position || '-', // 🟢 เพิ่ม shelf_position
                 total_in: totalIn,
                 total_out: totalOut,
                 avg_daily: avgDailyOut,
@@ -190,14 +192,14 @@ export default function Inventory() {
   };
 
   // 🟢 2. SINGLE ADJUST STOCK LOGIC
-  const executeStockAdjust = async (productId: string, diff: number, newQty: number, reason: string) => {
+  const executeStockAdjust = async (productId: string, diff: number, newQty: number, reason: string, defaultLoc: string) => {
       const { data: lots } = await supabase.from('inventory_lots').select('*').eq('product_id', productId).order('quantity', { ascending: false }).limit(1);
       
       if (lots && lots.length > 0) {
           const newLotQty = Number(lots[0].quantity) + diff;
           await supabase.from('inventory_lots').update({ quantity: newLotQty, last_updated: new Date().toISOString() }).eq('lot_id', lots[0].lot_id);
       } else {
-          await supabase.from('inventory_lots').insert([{ product_id: productId, quantity: newQty, storage_location: 'MAIN_WH' }]);
+          await supabase.from('inventory_lots').insert([{ product_id: productId, quantity: newQty, storage_location: defaultLoc }]);
       }
 
       await supabase.from('transactions_log').insert([{
@@ -212,12 +214,13 @@ export default function Inventory() {
   const handleSaveAdjust = async () => {
       if (isViewer) return alert('ไม่มีสิทธิ์เข้าถึงการแก้ไข');
       if (!adjustItem) return;
-      const newQty = parseInt(adjustQty);
+      // 🟢 แก้ไข: ให้รองรับทศนิยมโดยใช้ parseFloat
+      const newQty = parseFloat(adjustQty);
       if (isNaN(newQty) || newQty < 0) return alert("Please enter a valid positive number");
       setIsAdjusting(true);
       try {
           const diff = newQty - adjustItem.current_qty;
-          if (diff !== 0) await executeStockAdjust(adjustItem.product_id, diff, newQty, adjustReason || 'Manual Adjustment');
+          if (diff !== 0) await executeStockAdjust(adjustItem.product_id, diff, newQty, adjustReason || 'Manual Adjustment', adjustItem.default_location);
           alert("✅ Stock Updated Successfully!");
           setAdjustItem(null);
           fetchData();
@@ -225,7 +228,7 @@ export default function Inventory() {
       setIsAdjusting(false);
   };
 
-  // 🟢 3. SECURE BULK ADJUST
+  // 🟢 3. SECURE BULK ADJUST 
   const handleExportAdjustTemplate = () => {
       const exportData = sortedData.map(item => ({
           'รหัสสินค้า (Product ID)': item.product_id,
@@ -254,7 +257,8 @@ export default function Inventory() {
               const changes: any[] = [];
               rows.forEach((row: any) => {
                   const pid = String(row['รหัสสินค้า (Product ID)'] || row['Product ID'] || row['product_id'] || '').trim();
-                  const newQty = parseInt(row['ยอดสต๊อกใหม่ (New Qty)'] || row['New Qty']);
+                  // 🟢 แก้ไข: ให้รองรับทศนิยมตอนดึงข้อมูลจาก Excel
+                  const newQty = parseFloat(row['ยอดสต๊อกใหม่ (New Qty)'] || row['New Qty']);
                   const reason = String(row['เหตุผลการปรับยอด (Reason)'] || row['Reason'] || 'Bulk Import Adjustment');
 
                   if (pid && !isNaN(newQty) && newQty >= 0) {
@@ -266,7 +270,8 @@ export default function Inventory() {
                               old_qty: currentItem.current_qty,
                               new_qty: newQty,
                               diff: newQty - currentItem.current_qty,
-                              reason: reason
+                              reason: reason,
+                              default_location: currentItem.default_location 
                           });
                       }
                   }
@@ -284,7 +289,6 @@ export default function Inventory() {
       reader.readAsArrayBuffer(file);
   };
 
-  // 🚀🚀🚀 BULK ADJUST CONFIRMATION (PERFORMANCE BOOSTED) 🚀🚀🚀
   const handleConfirmBulkAdjust = async () => {
       if (isViewer) return;
       setIsBulkSaving(true);
@@ -294,54 +298,47 @@ export default function Inventory() {
           const lotsToInsert: any[] = [];
           const logsToInsert: any[] = [];
 
-          // 🟢 แบ่งข้อมูลประมวลผลทีละ 500 รายการ (ป้องกัน URL/Query ยาวเกินลิมิตตอน Select)
           const chunkSize = 500;
           for (let i = 0; i < bulkPreviewData.length; i += chunkSize) {
               const chunk = bulkPreviewData.slice(i, i + chunkSize);
               const productIds = chunk.map(item => item.product_id);
 
-              // 1. Bulk Select: ดึงสต๊อกล็อตเดิมมาเช็คทีเดียวทั้งชุด
               const { data: existingLots } = await supabase
                   .from('inventory_lots')
                   .select('*')
                   .in('product_id', productIds);
 
-              // จัดกลุ่มให้ค้นหาง่าย
               const lotsMap: Record<string, any[]> = {};
               (existingLots || []).forEach(lot => {
                   if (!lotsMap[lot.product_id]) lotsMap[lot.product_id] = [];
                   lotsMap[lot.product_id].push(lot);
               });
 
-              // 2. ประมวลผลสร้างคำสั่ง Update/Insert ภายใน Memory
               chunk.forEach(item => {
                   const diff = item.diff;
                   const newQty = item.new_qty;
                   const productLots = lotsMap[item.product_id] || [];
 
                   if (productLots.length > 0) {
-                      // ถ้ามีล็อตเดิม ให้เลือกล็อตที่มีของเยอะสุดไปหัก/เพิ่ม
                       productLots.sort((a, b) => Number(b.quantity) - Number(a.quantity));
                       const targetLot = productLots[0];
 
                       lotsToUpsert.push({
                           lot_id: targetLot.lot_id,
                           product_id: item.product_id,
-                          storage_location: targetLot.storage_location,
+                          storage_location: targetLot.storage_location, 
                           quantity: Number(targetLot.quantity) + diff,
                           last_updated: now
                       });
                   } else {
-                      // ถ้าไม่เคยมีสต๊อก ให้สร้างล็อตใหม่
                       lotsToInsert.push({
                           product_id: item.product_id,
                           quantity: newQty,
-                          storage_location: 'MAIN_WH', 
+                          storage_location: item.default_location || '-', 
                           last_updated: now
                       });
                   }
 
-                  // เตรียมสร้างประวัติ Log
                   logsToInsert.push({
                       transaction_type: 'ADJUST',
                       product_id: item.product_id,
@@ -353,7 +350,6 @@ export default function Inventory() {
               });
           }
 
-          // 3. Bulk Execute: ยิงขึ้น Database ทีละมัด (ทำงานขนานกัน) เร็วขึ้น 100 เท่า
           const promises = [];
           const writeChunkSize = 1000;
           
@@ -372,7 +368,7 @@ export default function Inventory() {
           alert(`✅ ปรับปรุงสต๊อกสำเร็จจำนวน ${bulkPreviewData.length} รายการอย่างรวดเร็ว!`);
           setIsBulkPreviewOpen(false);
           setBulkPreviewData([]);
-          fetchData(); // ดึงข้อมูลก้อนใหม่มาแสดง
+          fetchData(); 
 
       } catch (error: any) {
           alert("Error during bulk adjust: " + error.message);
@@ -380,7 +376,6 @@ export default function Inventory() {
       setIsBulkSaving(false);
   };
 
-  // --- Export Report ---
   const handleExportReport = () => {
       const exportData = sortedData.map(item => ({
           'รหัส': item.product_id,
@@ -389,8 +384,9 @@ export default function Inventory() {
           'หน่วย': item.unit,
           'Outbound': item.total_out,
           'Inbound': item.total_in,
-          'Category': item.category,
-          'Location': item.location,
+          'Category / Zone': item.category,
+          'Location (ห้อง)': item.location,
+          'Shelf (ชั้นวาง)': item.shelf_position, // 🟢 เพิ่มคอลัมน์ Shelf ใน Export
           'Status': item.status,
           '% การระบายสินค้า': item.sell_through.toFixed(2) + '%',
           'ค่าเฉลี่ยจ่าย/วัน': item.avg_daily.toFixed(2),
@@ -403,7 +399,6 @@ export default function Inventory() {
       XLSX.writeFile(wb, `Inventory_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
-  // --- STOCK CARD ---
   const handleOpenStockCard = async (item: any) => {
       setStockCardItem(item);
       setHistoryLoading(true);
@@ -428,7 +423,6 @@ export default function Inventory() {
       } catch (error) { console.error(error); }
   };
 
-  // --- Data Sorting & Filtering ---
   const handleSort = (key: string) => {
       let direction = 'asc';
       if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
@@ -476,7 +470,6 @@ export default function Inventory() {
         </div>
         <div className="flex flex-wrap gap-2">
             
-            {/* 🟢 สถานะการ Sync ข้อมูล */}
             {syncProgress && (
                 <span className="flex items-center gap-2 px-3 py-1.5 rounded-lg font-bold text-xs bg-cyan-50 text-cyan-600 border border-cyan-100 animate-pulse mr-2">
                     <Activity size={14}/> {syncProgress}
@@ -503,7 +496,6 @@ export default function Inventory() {
                 <Download size={14}/> Export
             </button>
             
-            {/* 🟢 ปุ่ม Sync Data ให้หมุนได้ */}
             <button onClick={fetchData} disabled={loading} className="flex items-center gap-2 bg-cyan-600 text-white px-3 py-1.5 rounded-lg font-bold shadow hover:bg-cyan-700 text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Sync Data
             </button>
@@ -518,7 +510,7 @@ export default function Inventory() {
                   <input type="text" placeholder="Search product..." className="w-full pl-9 p-2 border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-cyan-500" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
               </div>
               <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none cursor-pointer hover:bg-slate-50" value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
-                  <option value="ALL">All Categories</option>
+                  <option value="ALL">All Categories / Zones</option>
                   {uniqueCategories.map(c => <option key={c as string} value={c as string}>{c as string}</option>)}
               </select>
               <select className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none cursor-pointer hover:bg-slate-50" value={locationFilter} onChange={e => setLocationFilter(e.target.value)}>
@@ -558,6 +550,8 @@ export default function Inventory() {
                 <thead className="bg-slate-100 text-slate-600 font-bold border-b text-xs uppercase sticky top-0 z-20 shadow-sm">
                     <tr>
                         <th className="p-3 pl-4 sticky left-0 bg-slate-100 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] cursor-pointer hover:bg-slate-200" onClick={() => handleSort('product_id')}>Product Info <ArrowUpDown size={10} className="inline ml-1"/></th>
+                        {/* 🟢 อัปเดตหัวตาราง โชว์ Room & Shelf */}
+                        <th className="p-3 text-center cursor-pointer hover:bg-slate-200 bg-cyan-50/50" onClick={() => handleSort('location')}><MapPin size={12} className="inline mr-1"/>Room & Shelf <ArrowUpDown size={10} className="inline ml-1"/></th>
                         <th className="p-3 text-center bg-gray-50 cursor-pointer hover:bg-gray-200" onClick={() => handleSort('current_qty')}>Stock <ArrowUpDown size={10} className="inline ml-1"/></th>
                         <th className="p-3 text-center">Unit</th>
                         <th className="p-3 text-center text-emerald-700 bg-emerald-50">Inbound</th>
@@ -565,17 +559,15 @@ export default function Inventory() {
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('avg_daily')}>Avg Out/Day</th>
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('sell_through')}>Sell-Through</th>
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('days_supply')}>Days Supply</th>
-                        <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('depletion_date')}>Depletion</th>
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('status')}>Status</th>
-                        <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('location')}>Loc</th>
                         <th className="p-3 text-center w-28">Action</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                     {loading ? (
-                        <tr><td colSpan={12} className="p-10 text-center text-slate-400">Loading data...</td></tr>
+                        <tr><td colSpan={11} className="p-10 text-center text-slate-400">Loading data...</td></tr>
                     ) : currentData.length === 0 ? (
-                        <tr><td colSpan={12} className="p-10 text-center text-slate-400">No data found in {showArchived ? 'Archived' : 'Active'} list.</td></tr>
+                        <tr><td colSpan={11} className="p-10 text-center text-slate-400">No data found in {showArchived ? 'Archived' : 'Active'} list.</td></tr>
                     ) : currentData.map((item, idx) => {
                         const isCritical = !showArchived && (item.status === 'Low Stock' || item.status === 'Out of Stock');
                         return (
@@ -585,13 +577,24 @@ export default function Inventory() {
                                         {item.product_id}
                                     </Link>
                                     <div className="text-xs text-slate-500 truncate w-40 mt-0.5" title={item.product_name}>{item.product_name}</div>
-                                    <div className="text-[10px] text-slate-400">{item.category}</div>
                                 </td>
-                                <td className="p-3 text-center font-bold text-lg text-slate-800 bg-gray-50/30">{item.current_qty.toLocaleString()}</td>
+
+                                {/* 🟢 แสดง Room (Location) และ Shelf (ชั้นวาง) */}
+                                <td className="p-3 text-center bg-cyan-50/30">
+                                    <div className="text-[10px] font-bold text-cyan-600 bg-white border border-cyan-100 rounded px-1.5 py-0.5 inline-block mb-1 shadow-sm uppercase tracking-wider truncate max-w-[100px]" title={`ห้อง (Room/Location): ${item.location}`}>
+                                        RM: {item.location}
+                                    </div>
+                                    <div className="font-mono text-sm font-bold text-slate-700 truncate max-w-[120px]" title={`ชั้นวาง (Shelf): ${item.shelf_position}`}>
+                                        {item.shelf_position !== '-' ? `🗄️ ${item.shelf_position}` : '-'}
+                                    </div>
+                                </td>
+
+                                {/* 🟢 ให้แสดงผลแบบมีทศนิยม */}
+                                <td className="p-3 text-center font-bold text-lg text-slate-800 bg-gray-50/30">{item.current_qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                 <td className="p-3 text-center text-xs text-slate-500">{item.unit}</td>
-                                <td className="p-3 text-center text-emerald-600 bg-emerald-50/10">+{item.total_in.toLocaleString()}</td>
-                                <td className="p-3 text-center text-rose-600 bg-rose-50/10">-{item.total_out.toLocaleString()}</td>
-                                <td className="p-3 text-center font-mono font-bold">{item.avg_daily.toLocaleString(undefined,{maximumFractionDigits:1})}</td>
+                                <td className="p-3 text-center text-emerald-600 bg-emerald-50/10">+{item.total_in.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                <td className="p-3 text-center text-rose-600 bg-rose-50/10">-{item.total_out.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                <td className="p-3 text-center font-mono font-bold">{item.avg_daily.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
                                 <td className="p-3 text-center">
                                     <div className="text-xs font-bold">{item.sell_through.toFixed(1)}%</div>
                                     <div className="w-12 h-1 bg-slate-200 rounded-full mx-auto mt-1 overflow-hidden">
@@ -603,7 +606,6 @@ export default function Inventory() {
                                         {item.days_supply > 365 ? '>1Y' : item.days_supply}
                                     </span>
                                 </td>
-                                <td className="p-3 text-center text-xs font-bold text-slate-600">{item.depletion_date}</td>
                                 <td className="p-3 text-center">
                                     <span className={`text-[10px] px-2 py-1 rounded-full border font-bold ${
                                         item.status === 'Out of Stock' ? 'bg-slate-200 text-slate-500' :
@@ -615,7 +617,6 @@ export default function Inventory() {
                                         {item.status}
                                     </span>
                                 </td>
-                                <td className="p-3 text-center text-xs font-mono text-slate-500 max-w-[100px] truncate" title={item.location}>{item.location}</td>
                                 <td className="p-3 text-center flex justify-center gap-1">
                                     <button onClick={() => handleOpenStockCard(item)} className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 hover:text-cyan-600 transition-colors" title="Stock History">
                                         <History size={14}/>
@@ -671,7 +672,8 @@ export default function Inventory() {
                       </div>
                       <div className="mb-4">
                           <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Current Quantity</label>
-                          <input type="number" className="w-full p-3 border border-slate-300 rounded-xl text-xl font-bold text-center focus:ring-2 focus:ring-cyan-500 outline-none" value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} autoFocus />
+                          {/* 🟢 แก้ไข input ให้รองรับทศนิยม step="0.01" */}
+                          <input type="number" step="0.01" className="w-full p-3 border border-slate-300 rounded-xl text-xl font-bold text-center focus:ring-2 focus:ring-cyan-500 outline-none" value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} autoFocus />
                       </div>
                       <div>
                           <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Reason / Note</label>
@@ -718,10 +720,10 @@ export default function Inventory() {
                                           <div className="font-bold text-slate-800">{item.product_id}</div>
                                           <div className="text-xs text-slate-500 truncate w-48">{item.product_name}</div>
                                       </td>
-                                      <td className="p-3 text-center text-slate-400 font-mono bg-slate-50">{item.old_qty}</td>
-                                      <td className="p-3 text-center font-bold text-amber-700 bg-amber-50/50">{item.new_qty}</td>
+                                      <td className="p-3 text-center text-slate-400 font-mono bg-slate-50">{item.old_qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                      <td className="p-3 text-center font-bold text-amber-700 bg-amber-50/50">{item.new_qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                       <td className={`p-3 text-right font-bold border-l ${item.diff > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                          {item.diff > 0 ? '+' : ''}{item.diff}
+                                          {item.diff > 0 ? '+' : ''}{item.diff.toLocaleString(undefined, {maximumFractionDigits: 2})}
                                       </td>
                                       <td className="p-3 pr-4 text-xs text-slate-500 truncate max-w-[150px]">{item.reason}</td>
                                   </tr>
@@ -793,10 +795,10 @@ export default function Inventory() {
                                       </td>
                                       <td className="p-4 text-slate-700 text-xs font-medium truncate max-w-[150px]">{h.ref}</td>
                                       <td className={`p-4 text-right font-black text-base ${h.qtyChange > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                          {h.qtyChange > 0 ? '+' : ''}{h.qtyChange.toLocaleString()}
+                                          {h.qtyChange > 0 ? '+' : ''}{h.qtyChange.toLocaleString(undefined, {maximumFractionDigits: 2})}
                                       </td>
                                       <td className="p-4 text-right font-bold text-slate-800">
-                                          {h.balance.toLocaleString()}
+                                          {h.balance.toLocaleString(undefined, {maximumFractionDigits: 2})}
                                       </td>
                                   </tr>
                               ))}
