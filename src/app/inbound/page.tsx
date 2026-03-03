@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '../../supabaseClient'; 
-import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History, AlertTriangle, Printer } from 'lucide-react';
+import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History, AlertTriangle, Printer, Filter } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface FormDataState {
@@ -14,15 +14,12 @@ interface FormDataState {
   note: string;
 }
 
-// 🟢 ตัวช่วยดึงวันที่ให้เป็นเวลาไทยเสมอ
 const getThaiDate = (dateObj = new Date()) => {
     return dateObj.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
 };
 
 const Inbound = () => {
   const [userRole, setUserRole] = useState<string>('VIEWER');
-  
-  // 🟢 CLOCK STATE (BKK TIME)
   const [bkkTime, setBkkTime] = useState<string>('');
 
   const [activeTab, setActiveTab] = useState<string>('po');
@@ -42,6 +39,8 @@ const Inbound = () => {
 
   const [cart, setCart] = useState<any[]>([]);
   
+  const [cartSearchTerm, setCartSearchTerm] = useState<string>('');
+
   const [formData, setFormData] = useState<FormDataState>({
     docNo: '', vendorId: '', vendorName: '', refPO: '', truckTemp: '', note: ''
   });
@@ -69,7 +68,6 @@ const Inbound = () => {
     setFormData((prev: FormDataState) => ({ ...prev, docNo: `RCV-${Date.now()}` }));
     fetchMasterData();
 
-    // 🕒 ระบบนาฬิกาดิจิตอล BKK Time
     const updateTime = () => {
         const now = new Date();
         setBkkTime(now.toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok', hour12: false }));
@@ -108,14 +106,24 @@ const Inbound = () => {
 
     if (poSearchTerm) {
         const lower = poSearchTerm.toLowerCase();
-        result = result.filter((po: any) => 
-            (po.po_number || '').toLowerCase().includes(lower) || 
-            (po.vendor_full_name || '').toLowerCase().includes(lower) ||
-            (po.vendor_id || '').toLowerCase().includes(lower)
-        );
+        result = result.filter((po: any) => {
+            const matchHeader = 
+                (po.po_number || '').toLowerCase().includes(lower) || 
+                (po.vendor_full_name || '').toLowerCase().includes(lower) ||
+                (po.vendor_id || '').toLowerCase().includes(lower);
+
+            const matchLines = (po.po_lines || []).some((line: any) => {
+                const matchId = (line.product_id || '').toLowerCase().includes(lower);
+                const prodInfo = products.find(p => p.product_id === line.product_id);
+                const matchName = (prodInfo?.product_name || '').toLowerCase().includes(lower);
+                return matchId || matchName;
+            });
+
+            return matchHeader || matchLines;
+        });
     }
     setFilteredPOs(result);
-  }, [poSearchTerm, pendingPOs, dateFilter, listTab]);
+  }, [poSearchTerm, pendingPOs, dateFilter, listTab, products]);
 
   const fetchPendingPOs = async () => {
     try {
@@ -151,13 +159,13 @@ const Inbound = () => {
     } catch (error: any) { console.error("Error fetching master data:", error); } 
   };
 
+  // 🚀🚀🚀 ระบบนำเข้า PO ความเร็วสูง (High-Performance Bulk Import) 🚀🚀🚀
   const handleImportPO = (event: any) => {
     const file = event.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async (e: any) => {
         if (!e.target?.result) return;
-        
         setLoading(true);
         await new Promise(resolve => setTimeout(resolve, 10));
 
@@ -165,7 +173,7 @@ const Inbound = () => {
             const data = new Uint8Array(e.target.result as ArrayBuffer);
             const workbook = XLSX.read(data, { type: 'array' });
             const rows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
-            if (rows.length === 0) throw new Error("File Empty!");
+            if (rows.length === 0) throw new Error("ไฟล์ว่างเปล่า (File Empty!)");
 
             const groupedPOs: Record<string, any> = {};
             
@@ -177,9 +185,11 @@ const Inbound = () => {
                 if (typeof dDate === 'number') dDate = getThaiDate(new Date(Math.round((dDate - 25569) * 86400 * 1000)));
                 else if (!dDate) dDate = getThaiDate();
 
-                if (!groupedPOs[poNo]) {
-                    groupedPOs[poNo] = { 
-                        po_number: String(poNo).trim(), 
+                const cleanPoNo = String(poNo).trim();
+
+                if (!groupedPOs[cleanPoNo]) {
+                    groupedPOs[cleanPoNo] = { 
+                        po_number: cleanPoNo, 
                         vendor_id: String(row['Vendor account'] || '').trim(), 
                         delivery_date: dDate, 
                         warehouse_code: row['Warehouse'] || 'Main', 
@@ -188,27 +198,72 @@ const Inbound = () => {
                     };
                 }
                 
-                groupedPOs[poNo].lines.push({ 
-                    po_number: String(poNo).trim(),
+                groupedPOs[cleanPoNo].lines.push({ 
+                    po_number: cleanPoNo,
                     product_id: String(row['Item number'] || '').trim(), 
                     ordered_qty: parseFloat(row['Quantity']) || 0, 
                     received_qty: 0 
                 });
             });
 
-            let count = 0;
-            for (const poNo of Object.keys(groupedPOs)) {
+            const incomingPoNumbers = Object.keys(groupedPOs);
+
+            // 1. เช็คเลข PO ทั้งหมดว่ามีอันไหนอยู่ในระบบแล้วบ้าง
+            const { data: existingPOs, error: checkErr } = await supabase
+                .from('purchase_orders')
+                .select('po_number')
+                .in('po_number', incomingPoNumbers);
+
+            if (checkErr) throw checkErr;
+
+            const existingPoSet = new Set(existingPOs?.map(p => p.po_number) || []);
+            const duplicatedPOs = [];
+            const newPOs = [];
+
+            // 2. แยกของเก่า (ข้าม) และของใหม่ (เตรียมเข้า)
+            for (const poNo of incomingPoNumbers) {
+                if (existingPoSet.has(poNo)) {
+                    duplicatedPOs.push(poNo); 
+                } else {
+                    newPOs.push(poNo); 
+                }
+            }
+
+            if (duplicatedPOs.length > 0) {
+                const displayDupes = duplicatedPOs.length > 5 ? duplicatedPOs.slice(0, 5).join('\n- ') + `\n...และอื่นๆ รวม ${duplicatedPOs.length} รายการ` : '- ' + duplicatedPOs.join('\n- ');
+                alert(`⚠️ ปฏิเสธการนำเข้า PO ซ้ำ!\n\nระบบพบว่าเลข PO ต่อไปนี้ถูกนำเข้าและบันทึกในระบบไปแล้ว:\n${displayDupes}\n\nระบบจะทำการข้ามรายการเหล่านี้ (หากต้องการรับของเซ็ตนี้ใหม่ กรุณาเปลี่ยนชื่อเลข PO ในไฟล์ Excel)\n\nระบบจะนำเข้าเฉพาะ PO เลขใหม่ให้เท่านั้นครับ`);
+            }
+
+            // ⚡⚡⚡ กระบวนการ Bulk Insert (เร็วกว่าเดิม 10-100 เท่า) ⚡⚡⚡
+            const poDataToInsert: any[] = [];
+            const poLinesToInsert: any[] = [];
+
+            for (const poNo of newPOs) {
                 const poData = groupedPOs[poNo];
                 const poLinesData = poData.lines;
                 delete poData.lines;
 
-                await supabase.from('purchase_orders').upsert([poData], { onConflict: 'po_number' });
-                await supabase.from('po_lines').upsert(poLinesData, { onConflict: 'po_number,product_id' });
-                count++;
+                poDataToInsert.push(poData);
+                poLinesToInsert.push(...poLinesData); // เอา array ย่อยมายัดรวมกัน
+            }
+
+            if (poDataToInsert.length > 0) {
+                // ยิง 1 ที บันทึกหัว PO ทั้งหมดรวดเดียว
+                const { error: poInsertErr } = await supabase.from('purchase_orders').insert(poDataToInsert);
+                if (poInsertErr) throw poInsertErr;
+
+                // ยิงอีก 1 ที บันทึกรายการสินค้าทั้งหมดรวดเดียว
+                if (poLinesToInsert.length > 0) {
+                    const { error: linesInsertErr } = await supabase.from('po_lines').insert(poLinesToInsert);
+                    if (linesInsertErr) throw linesInsertErr;
+                }
             }
             
-            alert(`✅ Processed ${count} POs!`);
-            fetchPendingPOs(); 
+            if (newPOs.length > 0) {
+                alert(`✅ นำเข้า PO ใหม่เสร็จสมบูรณ์จำนวน: ${newPOs.length} เอกสาร (ประมวลผลความเร็วสูง)`);
+                fetchPendingPOs(); 
+            }
+            
         } catch (error: any) { alert("Import Error: " + error.message); }
         setLoading(false);
     };
@@ -218,7 +273,6 @@ const Inbound = () => {
 
   const handleExportPending = async () => {
     if (!exportStart || !exportEnd) return alert("กรุณาเลือกวันที่ให้ครบถ้วน");
-    
     setLoading(true);
     await new Promise(resolve => setTimeout(resolve, 10));
 
@@ -285,6 +339,7 @@ const Inbound = () => {
     setSelectedPO(po);
     setVendorSearchInput('');
     setShowVendorDropdown(false);
+    setCartSearchTerm(''); 
 
     const today = getThaiDate();
     const planDate = po.delivery_date || today;
@@ -315,14 +370,14 @@ const Inbound = () => {
 
   const handleForceClose = async () => {
     if (!selectedPO) return;
-    if (!window.confirm(`คุณแน่ใจหรือไม่ที่จะ "ปิดเอกสาร" PO: ${selectedPO.po_number}?\n\n(ระบบจะเปลี่ยนสถานะเป็น COMPLETED และจะไม่แสดงในหน้ารอรับสินค้าอีก)`)) return;
+    if (!window.confirm(`คุณแน่ใจหรือไม่ที่จะ "ปิดเอกสาร" PO: ${selectedPO.po_number}?\n\n(ระบบจะเปลี่ยนสถานะเป็น COMPLETED ทันที โดยจะไม่รอรับสินค้าที่เหลืออีกต่อไป)`)) return;
     
     setLoading(true);
     await new Promise(resolve => setTimeout(resolve, 10));
 
     try {
         await supabase.from('purchase_orders').update({ status: 'COMPLETED' }).eq('po_number', selectedPO.po_number);
-        alert("✅ ปิดรายการ PO สำเร็จ!");
+        alert("✅ ปิดรายการ PO (Force Close) สำเร็จ!");
         setSelectedPO(null); setCart([]); fetchPendingPOs();
     } catch (error: any) { alert("Error: " + error.message); }
     setLoading(false);
@@ -369,29 +424,38 @@ const Inbound = () => {
   const addToCart = (product: any) => {
     if (isViewer) return;
     const existing = cart.find((i: any) => i.productId === product.product_id);
-    if (existing) return alert("Item already in list!");
+    if (existing) return alert("มีสินค้านี้ในตะกร้าอยู่แล้ว!");
     const newItem = createCartItem(product.product_id, product.product_name, 0, product);
     newItem.qtyReceived = 1; 
     setCart([...cart, newItem]);
   };
 
-  const updateItem = (index: number, field: string, value: any) => {
+  const updateItem = (productId: string, field: string, value: any) => {
     if (isViewer) return;
-    const newCart = [...cart];
-    (newCart[index] as any)[field] = value;
-    if(field === 'location') newCart[index].isAutoLocation = false;
-    setCart(newCart);
+    setCart(prevCart => prevCart.map(item => {
+        if (item.productId === productId) {
+            const updatedItem = { ...item, [field]: value };
+            if (field === 'location') updatedItem.isAutoLocation = false;
+            return updatedItem;
+        }
+        return item;
+    }));
   };
 
-  // 🟢 ค้นหาแบบ Deep Search (ชื่อ และ รหัสสินค้า)
   const filteredProducts = (products || []).filter((p: any) => 
     (p.product_name || '').toLowerCase().includes(productSearchTerm.toLowerCase()) ||
     (p.product_id || '').toLowerCase().includes(productSearchTerm.toLowerCase())
   ).slice(0, 20); 
 
-  // ==========================================
-  // 🚀 HIGH-PERFORMANCE BULK SUBMIT
-  // ==========================================
+  const filteredCart = useMemo(() => {
+      if (!cartSearchTerm) return cart;
+      const lowerSearch = cartSearchTerm.toLowerCase();
+      return cart.filter(item => 
+          item.productId.toLowerCase().includes(lowerSearch) || 
+          item.productName.toLowerCase().includes(lowerSearch)
+      );
+  }, [cart, cartSearchTerm]);
+
   const handleSubmit = async () => {
     if (isViewer) return alert("ไม่มีสิทธิ์ทำรายการ (View Only)");
     if (cart.length === 0) return alert("No items.");
@@ -405,11 +469,9 @@ const Inbound = () => {
     }
 
     setLoading(true);
-    // พักหายใจให้ UI วาดรูป Loading
     await new Promise(resolve => setTimeout(resolve, 10));
 
     try {
-        // 1. สร้างหัวเอกสาร Receipt
         const { data: receiptData, error: receiptError } = await supabase
             .from('inbound_receipts')
             .insert([{
@@ -424,16 +486,11 @@ const Inbound = () => {
         if (receiptError) throw receiptError;
         const newReceiptId = receiptData.receipt_id;
 
-        // 🟢 การรวมข้อมูลเพื่อยิง Bulk Insert ทีเดียว (Performance Boost)
         const inboundLinesToInsert = [];
         const logsToInsert = [];
         const productIds = cart.map(item => item.productId);
 
-        // ดึงสต๊อก Lot เก่าทั้งหมดมาเช็คแบบรวดเดียว
-        const { data: existingLots } = await supabase
-            .from('inventory_lots')
-            .select('*')
-            .in('product_id', productIds);
+        const { data: existingLots } = await supabase.from('inventory_lots').select('*').in('product_id', productIds);
 
         const lotsMap = new Map();
         existingLots?.forEach(lot => {
@@ -449,8 +506,9 @@ const Inbound = () => {
             currentBalances[lot.product_id] += Number(lot.quantity) || 0;
         });
 
-        // 2. จัดเตรียมข้อมูลแต่ละแถวในตะกร้า
-        for (const item of cart) {
+        const itemsToProcess = cart.filter(item => parseFloat(item.qtyReceived) > 0 || parseFloat(item.qtyOrdered) === 0);
+
+        for (const item of itemsToProcess) {
             const rcvQty = parseFloat(item.qtyReceived) || 0;
             const convRate = parseFloat(item.conversionRate) || 1;
             const baseQty = rcvQty * convRate; 
@@ -459,7 +517,6 @@ const Inbound = () => {
             const nextYear = new Date(); nextYear.setFullYear(nextYear.getFullYear() + 1);
             const safeExpDate = item.expDate || getThaiDate(nextYear);
 
-            // เก็บรายการเพื่อ Insert Inbound Lines
             inboundLinesToInsert.push({
                 receipt_id: newReceiptId,
                 product_id: item.productId,
@@ -473,7 +530,6 @@ const Inbound = () => {
                 base_qty: baseQty
             });
 
-            // จัดการ Lot (สต๊อกใหม่/เก่า)
             const lotKey = `${item.productId}_${item.location}_${safeMfgDate}_${safeExpDate}_${item.lotStatus}`;
             const existingLot = lotsMap.get(lotKey);
 
@@ -499,7 +555,6 @@ const Inbound = () => {
                 }
             }
 
-            // คำนวณ Balance ทันทีสำหรับบันทึก Log
             currentBalances[item.productId] += baseQty;
             const baseOrderedQty = item.qtyOrdered ? (parseFloat(item.qtyOrdered) * convRate) : 0;
             let thaiTimingStatus = deliveryTiming === 'LATE' ? 'ล่าช้า' : (deliveryTiming === 'EARLY' ? 'มาก่อนกำหนด' : 'ตรงเวลา');
@@ -509,8 +564,10 @@ const Inbound = () => {
                 product_id: item.productId,
                 quantity_change: baseQty,
                 balance_after: currentBalances[item.productId],
-                remarks: `รับเข้า (Inbound) ตามเอกสาร ${formData.docNo} [QC: ${item.lotStatus}]`,
+                remarks: `รับเข้าตามเอกสาร ${formData.docNo} ${activeTab === 'po' ? `(อ้างอิง PO: ${formData.refPO})` : '(Manual)'}`,
                 metadata: {
+                    po_number: activeTab === 'po' ? formData.refPO : null, 
+                    doc_no: formData.docNo, 
                     scheduled_date: activeTab === 'po' && selectedPO ? selectedPO.delivery_date : null,
                     time_status: thaiTimingStatus,
                     vehicle_temp: formData.truckTemp ? parseFloat(formData.truckTemp) : null,
@@ -520,14 +577,12 @@ const Inbound = () => {
             });
         }
 
-        // 3. ยิงประมวลผล (Promise.all) พร้อมกันทั้งหมดเพื่อให้เร็วขึ้น 10 เท่า!
         const promises = [];
         if (inboundLinesToInsert.length > 0) promises.push(supabase.from('inbound_lines').insert(inboundLinesToInsert));
         const lotsToUpsert = Array.from(lotsToUpsertMap.values());
         if (lotsToUpsert.length > 0) promises.push(supabase.from('inventory_lots').upsert(lotsToUpsert));
         if (logsToInsert.length > 0) promises.push(supabase.from('transactions_log').insert(logsToInsert));
 
-        // อัปเดต Location ล่าสุดกลับไปที่ Master Products
         const itemsWithNewLoc = cart.filter(item => !item.isAutoLocation && !isViewer);
         if (itemsWithNewLoc.length > 0) {
             const uniqueLocs: Record<string, string> = {};
@@ -539,7 +594,6 @@ const Inbound = () => {
 
         await Promise.all(promises);
 
-        // 4. หักลบยอด PO และอัปเดตสถานะ
         if (activeTab === 'po' && selectedPO) {
             let isAllComplete = true;
             const poPromises = [];
@@ -564,7 +618,7 @@ const Inbound = () => {
         }
 
         if (window.confirm("🎉 รับเข้าสำเร็จอย่างรวดเร็ว!\n\nต้องการไปที่หน้า [Print Labels] เพื่อพิมพ์บาร์โค้ดสำหรับสินค้าล็อตนี้เลยหรือไม่?")) {
-            const printJobs = cart.map((item: any) => ({
+            const printJobs = itemsToProcess.map((item: any) => ({
                 product_id: item.productId,
                 product_name: item.productName,
                 copies: item.qtyReceived ? Math.ceil(parseFloat(item.qtyReceived)) : 1, 
@@ -576,7 +630,7 @@ const Inbound = () => {
             window.location.href = '/print-labels';
         }
 
-        setCart([]); setSelectedPO(null);
+        setCart([]); setSelectedPO(null); setCartSearchTerm('');
         setFormData((prev: FormDataState) => ({...prev, docNo: `RCV-${Date.now()}`, truckTemp: '', vendorId: '', vendorName: '', refPO: ''}));
         setVendorSearchInput('');
         fetchPendingPOs(); 
@@ -587,13 +641,11 @@ const Inbound = () => {
 
   return (
     <div className="flex h-full bg-slate-50 flex-col rounded-2xl overflow-hidden relative">
-      {/* 🟢 HEADER: ปรับใหม่ให้โดดเด่นและรองรับมือถือ */}
       <div className="bg-white border-b border-slate-200 px-4 md:px-6 py-3 flex flex-col md:flex-row md:items-center justify-between shadow-sm z-10 gap-3">
         <div className="flex items-center gap-2 justify-between w-full md:w-auto">
             <h1 className="text-xl md:text-2xl font-bold text-slate-800 flex items-center gap-2">
                 <Truck className="text-blue-600"/> Inbound
             </h1>
-            {/* 🟢 Digital Clock สไตล์สปอร์ต เด่นๆ มุมขวาบน (มือถืออยู่ขวาบน, คอมอยู่ขวาสุด) */}
             <div className="md:hidden flex items-center gap-1.5 bg-slate-900 text-white px-3 py-1.5 rounded-lg shadow-inner">
                 <Clock size={12} className="text-emerald-400 animate-pulse"/>
                 <span className="text-xs font-mono font-bold tracking-widest">{bkkTime}</span>
@@ -603,11 +655,10 @@ const Inbound = () => {
         
         <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
             <div className="bg-slate-100 p-1 rounded-lg flex w-full sm:w-auto justify-center">
-                <button onClick={() => {setActiveTab('po'); setCart([]);}} className={`flex-1 sm:flex-none px-4 py-2 rounded-md font-bold text-sm transition-all ${activeTab === 'po' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>From PO</button>
-                <button onClick={() => {setActiveTab('manual'); setCart([]);}} className={`flex-1 sm:flex-none px-4 py-2 rounded-md font-bold text-sm transition-all ${activeTab === 'manual' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>Manual</button>
+                <button onClick={() => {setActiveTab('po'); setCart([]); setCartSearchTerm('');}} className={`flex-1 sm:flex-none px-4 py-2 rounded-md font-bold text-sm transition-all ${activeTab === 'po' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>From PO</button>
+                <button onClick={() => {setActiveTab('manual'); setCart([]); setCartSearchTerm('');}} className={`flex-1 sm:flex-none px-4 py-2 rounded-md font-bold text-sm transition-all ${activeTab === 'manual' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>Manual</button>
             </div>
             
-            {/* Digital Clock สำหรับ Desktop */}
             <div className="hidden md:flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-xl shadow-lg border border-slate-700">
                 <Clock size={16} className="text-emerald-400 animate-pulse"/>
                 <span className="text-sm font-mono font-bold tracking-widest">{bkkTime}</span>
@@ -616,10 +667,9 @@ const Inbound = () => {
         </div>
       </div>
 
-      {/* 🟢 MAIN CONTENT AREA */}
       <div className="flex flex-col lg:flex-row flex-1 overflow-hidden">
         
-        {/* === LEFT PANEL === */}
+        {/* --- LEFT PANEL --- */}
         <div className="w-full lg:w-96 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col shrink-0 h-[45vh] lg:h-full">
             {activeTab === 'po' ? (
                 <>
@@ -656,7 +706,13 @@ const Inbound = () => {
                     <div className="p-2 border-b border-slate-100 bg-white shrink-0">
                         <div className="relative">
                             <Search className="absolute left-3 top-2 text-slate-400" size={16}/>
-                            <input type="text" placeholder="ค้นหา PO หรือ ชื่อ Vendor..." className="w-full pl-9 p-2 border rounded-lg text-xs bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={poSearchTerm} onChange={(e: any) => setPoSearchTerm(e.target.value)} />
+                            <input 
+                                type="text" 
+                                placeholder="ค้นหา: PO, Vendor, รหัส, ชื่อสินค้า..." 
+                                className="w-full pl-9 p-2 border rounded-lg text-xs bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" 
+                                value={poSearchTerm} 
+                                onChange={(e: any) => setPoSearchTerm(e.target.value)} 
+                            />
                         </div>
                     </div>
                     
@@ -671,8 +727,11 @@ const Inbound = () => {
                                     </div>
                                     <span className="font-mono font-bold text-slate-700 text-xs bg-slate-100 px-1.5 py-0.5 rounded">{po.po_number}</span>
                                 </div>
-                                <div className="mb-2">
+                                <div className="mb-2 flex flex-col gap-1">
                                     <div className="font-bold text-slate-800 text-xs leading-tight line-clamp-1">{po.vendor_full_name}</div>
+                                    <div className="text-[9px] text-slate-500 flex items-center gap-1 bg-slate-50 w-max px-1.5 py-0.5 rounded border border-slate-200">
+                                        <History size={10} className="text-blue-400"/> นำเข้าเมื่อ: {po.created_at ? new Date(po.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) + ' น.' : 'N/A'}
+                                    </div>
                                 </div>
                                 <div className="flex justify-between items-center text-[10px] text-slate-500 border-t pt-1.5 mt-1.5">
                                     <div className="flex items-center gap-1"><Package size={10}/> <span>{(po.po_lines || []).reduce((acc: number, i: any) => acc + ((i.ordered_qty||0) - (i.received_qty||0)), 0).toLocaleString(undefined, {maximumFractionDigits: 2})} Left</span></div>
@@ -713,10 +772,9 @@ const Inbound = () => {
                     </div>
                     
                     <div className="mb-2">
-                        {/* 🟢 Deep Search: ปรับ Placeholder ให้รู้ว่าพิมพ์ชื่อภาษาไทยหาได้เลย */}
                         <div className="relative">
                             <Search className="absolute left-3 top-2 text-blue-400" size={16}/>
-                            <input type="text" placeholder="Deep Search: รหัส หรือ ชื่อสินค้า..." disabled={isViewer} className="w-full pl-9 p-2 text-sm border-2 border-blue-100 rounded-xl focus:ring-0 focus:border-blue-400 outline-none disabled:bg-slate-100 bg-white shadow-inner" value={productSearchTerm} onChange={(e: any) => setProductSearchTerm(e.target.value)}/>
+                            <input type="text" placeholder="ค้นหา: รหัส หรือ ชื่อสินค้า..." disabled={isViewer} className="w-full pl-9 p-2 text-sm border-2 border-blue-100 rounded-xl focus:ring-0 focus:border-blue-400 outline-none disabled:bg-slate-100 bg-white shadow-inner" value={productSearchTerm} onChange={(e: any) => setProductSearchTerm(e.target.value)}/>
                         </div>
                     </div>
                     <div className="flex-1 overflow-auto border border-slate-200 rounded-xl bg-white shadow-sm min-h-0">
@@ -737,7 +795,7 @@ const Inbound = () => {
             )}
         </div>
 
-        {/* === RIGHT PANEL (ตะกร้า และ การยืนยันรับเข้า) === */}
+        {/* --- RIGHT PANEL --- */}
         <div className="flex-1 flex flex-col bg-slate-50 overflow-hidden min-h-[50vh]">
             <div className="bg-white p-3 md:p-4 border-b border-slate-200 shadow-sm flex flex-col md:flex-row md:justify-between md:items-start shrink-0 gap-3">
                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 w-full">
@@ -784,6 +842,25 @@ const Inbound = () => {
                  )}
             </div>
 
+            {/* แถบค้นหาภายในตะกร้า (Cart Search) */}
+            {cart.length > 0 && (
+                <div className="px-2 md:px-4 pt-3 pb-1 shrink-0 bg-slate-50">
+                    <div className="relative">
+                        <Filter className="absolute left-3 top-2.5 text-slate-400" size={16}/>
+                        <input 
+                            type="text" 
+                            placeholder={`ค้นหาสินค้าใน PO นี้ (${cart.length} รายการ)...`}
+                            className="w-full pl-9 p-2 border border-slate-300 rounded-lg text-sm bg-white shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                            value={cartSearchTerm}
+                            onChange={(e) => setCartSearchTerm(e.target.value)}
+                        />
+                        {cartSearchTerm && (
+                            <button onClick={() => setCartSearchTerm('')} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-700"><X size={16}/></button>
+                        )}
+                    </div>
+                </div>
+            )}
+
             <div className="flex-1 p-2 md:p-4 min-h-0 relative">
                 <div className="absolute inset-2 md:inset-4 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
                     <div className="overflow-x-auto custom-scrollbar flex-1">
@@ -796,37 +873,44 @@ const Inbound = () => {
                                     <th className="p-2 md:p-3 w-40 bg-blue-50 text-blue-800 border-x border-blue-100">Conversion</th>
                                     <th className="p-2 md:p-3 w-16 text-center">Temp</th>
                                     <th className="p-2 md:p-3 w-24">QC Status</th>
-                                    {/* 🟢 อัปเดต Label วันที่ให้ชัดเจน (DD/MM/YYYY) */}
                                     <th className="p-2 md:p-3 w-32">MFG / EXP <span className="text-[9px] font-normal tracking-widest block text-slate-400">(DD/MM/YYYY)</span></th>
                                     <th className="p-2 md:p-3 w-28">Location & Shelf</th>
                                     {!isViewer ? <th className="p-2 md:p-3 w-10"></th> : null}
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                                {cart.length === 0 ? (
-                                    <tr><td colSpan={9} className="p-12 text-center text-slate-400 h-48"><Package size={40} className="opacity-20 mb-3 mx-auto"/><p className="text-sm font-medium">{activeTab === 'po' ? 'Select a PO from the left list.' : 'Select Vendor & Add items.'}</p></td></tr>
-                                ) : cart.map((item: any, idx: number) => (
-                                    <tr key={idx} className="hover:bg-slate-50 align-top transition-colors">
+                                {filteredCart.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={9} className="p-12 text-center text-slate-400 h-48">
+                                            <Package size={40} className="opacity-20 mb-3 mx-auto"/>
+                                            <p className="text-sm font-medium">{cartSearchTerm ? 'ไม่พบสินค้าที่ค้นหาในตะกร้า' : (activeTab === 'po' ? 'Select a PO from the left list.' : 'Select Vendor & Add items.')}</p>
+                                        </td>
+                                    </tr>
+                                ) : filteredCart.map((item: any) => {
+                                    const isReceiving = parseFloat(item.qtyReceived) > 0;
+
+                                    return (
+                                    <tr key={item.productId} className={`align-top transition-colors ${isReceiving ? 'bg-emerald-50/30 hover:bg-emerald-50/60' : 'hover:bg-slate-50'}`}>
                                         <td className="p-2 md:p-3">
                                             <div className="font-bold text-slate-700 text-xs">{item.productId}</div>
                                             <div className="text-[10px] md:text-xs text-slate-500 truncate w-40 mt-0.5" title={item.productName}>{item.productName}</div>
                                         </td>
                                         <td className="p-2 md:p-3 text-center pt-3 text-slate-400 font-mono text-xs">{item.qtyOrdered.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
-                                        <td className="p-2 md:p-3 text-center bg-yellow-50 border-x border-yellow-100">
-                                            <input type="number" step="0.01" disabled={isViewer} className="w-full p-1.5 md:p-2 border border-yellow-300 rounded-lg text-center font-bold text-slate-800 focus:ring-2 focus:ring-yellow-500 outline-none disabled:bg-slate-100 bg-white shadow-inner" value={item.qtyReceived} onChange={(e: any) => updateItem(idx, 'qtyReceived', e.target.value)}/>
+                                        <td className={`p-2 md:p-3 text-center border-x ${isReceiving ? 'bg-emerald-100/50 border-emerald-200' : 'bg-yellow-50 border-yellow-100'}`}>
+                                            <input type="number" step="0.01" disabled={isViewer} className={`w-full p-1.5 md:p-2 border rounded-lg text-center font-bold focus:ring-2 outline-none disabled:bg-slate-100 shadow-inner ${isReceiving ? 'border-emerald-400 text-emerald-800 focus:ring-emerald-500 bg-white' : 'border-yellow-300 text-slate-800 focus:ring-yellow-500 bg-white'}`} value={item.qtyReceived} onChange={(e: any) => updateItem(item.productId, 'qtyReceived', e.target.value)}/>
                                         </td>
                                         <td className="p-2 md:p-3 bg-blue-50/30 border-x border-blue-100">
-                                            <div className="flex items-center gap-1 mb-1.5"><input type="text" disabled={isViewer} placeholder="Unit" className="w-12 md:w-16 p-1 border rounded text-[10px] md:text-xs bg-white text-center shadow-sm outline-none disabled:bg-slate-100" value={item.recvUnit} onChange={(e: any) => updateItem(idx, 'recvUnit', e.target.value)} /><span className="text-[10px] text-slate-400">x</span><input type="number" disabled={isViewer} placeholder="Rate" className="w-12 md:w-14 p-1 border rounded text-[10px] md:text-xs text-center bg-white shadow-sm outline-none disabled:bg-slate-100" value={item.conversionRate} onChange={(e: any) => updateItem(idx, 'conversionRate', e.target.value)} /></div>
+                                            <div className="flex items-center gap-1 mb-1.5"><input type="text" disabled={isViewer} placeholder="Unit" className="w-12 md:w-16 p-1 border rounded text-[10px] md:text-xs bg-white text-center shadow-sm outline-none disabled:bg-slate-100" value={item.recvUnit} onChange={(e: any) => updateItem(item.productId, 'recvUnit', e.target.value)} /><span className="text-[10px] text-slate-400">x</span><input type="number" disabled={isViewer} placeholder="Rate" className="w-12 md:w-14 p-1 border rounded text-[10px] md:text-xs text-center bg-white shadow-sm outline-none disabled:bg-slate-100" value={item.conversionRate} onChange={(e: any) => updateItem(item.productId, 'conversionRate', e.target.value)} /></div>
                                             <div className="flex items-center gap-1 bg-blue-100 px-1.5 md:px-2 py-1 rounded border border-blue-200 shadow-sm"><Box size={12} className="text-blue-500"/><div className="text-xs md:text-sm font-black text-blue-700">{((parseFloat(item.qtyReceived)||0) * (parseFloat(item.conversionRate)||1)).toLocaleString(undefined, {maximumFractionDigits: 2})}</div><div className="text-[9px] md:text-[10px] font-bold text-blue-600 uppercase">{item.baseUnit}</div></div>
                                         </td>
-                                        <td className="p-2 md:p-3"><input type="number" step="0.1" disabled={isViewer} placeholder="°C" className="w-full p-1.5 md:p-2 border rounded text-center text-xs focus:ring-1 focus:ring-blue-300 outline-none disabled:bg-slate-100 bg-white" value={item.productTemp} onChange={(e: any) => updateItem(idx, 'productTemp', e.target.value)}/></td>
+                                        <td className="p-2 md:p-3"><input type="number" step="0.1" disabled={isViewer} placeholder="°C" className="w-full p-1.5 md:p-2 border rounded text-center text-xs focus:ring-1 focus:ring-blue-300 outline-none disabled:bg-slate-100 bg-white" value={item.productTemp} onChange={(e: any) => updateItem(item.productId, 'productTemp', e.target.value)}/></td>
                                         
                                         <td className="p-2 md:p-3">
                                             <select 
                                                 disabled={isViewer}
                                                 className={`w-full p-1.5 md:p-2 border rounded text-[9px] md:text-[10px] font-bold outline-none cursor-pointer ${item.lotStatus === 'HOLD' ? 'bg-rose-50 text-rose-700 border-rose-200 ring-1 ring-rose-400' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} disabled:cursor-not-allowed shadow-sm`}
                                                 value={item.lotStatus}
-                                                onChange={(e: any) => updateItem(idx, 'lotStatus', e.target.value)}
+                                                onChange={(e: any) => updateItem(item.productId, 'lotStatus', e.target.value)}
                                             >
                                                 <option value="AVAILABLE">✅ สมบูรณ์ (AVAILABLE)</option>
                                                 <option value="HOLD">⚠️ กักกัน (QC HOLD)</option>
@@ -834,22 +918,21 @@ const Inbound = () => {
                                         </td>
 
                                         <td className="p-2 md:p-3 space-y-1.5">
-                                            {/* 🟢 เบราว์เซอร์จะแสดงปฏิทินตามภาษาเครื่องอัตโนมัติ */}
-                                            <input type="date" disabled={isViewer} className="w-full p-1 md:p-1.5 border border-slate-300 rounded text-[10px] md:text-xs text-slate-600 outline-none focus:border-blue-500 disabled:bg-slate-100 bg-white shadow-sm" value={item.mfgDate} onChange={(e: any) => updateItem(idx, 'mfgDate', e.target.value)} title="MFG (ผลิต)" />
-                                            <input type="date" disabled={isViewer} className="w-full p-1 md:p-1.5 border border-slate-300 rounded text-[10px] md:text-xs text-red-500 outline-none focus:border-red-500 disabled:bg-slate-100 bg-red-50/30 shadow-sm" value={item.expDate} onChange={(e: any) => updateItem(idx, 'expDate', e.target.value)} title="EXP (หมดอายุ)"/>
+                                            <input type="date" disabled={isViewer} className="w-full p-1 md:p-1.5 border border-slate-300 rounded text-[10px] md:text-xs text-slate-600 outline-none focus:border-blue-500 disabled:bg-slate-100 bg-white shadow-sm" value={item.mfgDate} onChange={(e: any) => updateItem(item.productId, 'mfgDate', e.target.value)} title="MFG (ผลิต)" />
+                                            <input type="date" disabled={isViewer} className="w-full p-1 md:p-1.5 border border-slate-300 rounded text-[10px] md:text-xs text-red-500 outline-none focus:border-red-500 disabled:bg-slate-100 bg-red-50/30 shadow-sm" value={item.expDate} onChange={(e: any) => updateItem(item.productId, 'expDate', e.target.value)} title="EXP (หมดอายุ)"/>
                                         </td>
                                         <td className="p-2 md:p-3">
                                             <div className={`flex items-center gap-1 border rounded p-1 focus-within:ring-1 focus-within:ring-blue-300 relative mb-1.5 shadow-sm ${isViewer ? 'bg-slate-100' : 'bg-white'}`}>
                                                 {item.isAutoLocation ? <History size={10} className="text-blue-500"/> : <MapPin size={10} className="text-slate-400"/>}
-                                                <input type="text" disabled={isViewer} className="w-full text-[10px] md:text-xs outline-none bg-transparent font-bold text-slate-700" value={item.location} onChange={(e: any) => updateItem(idx, 'location', e.target.value)} title="Room Location" placeholder="Room..."/>
+                                                <input type="text" disabled={isViewer} className="w-full text-[10px] md:text-xs outline-none bg-transparent font-bold text-slate-700" value={item.location} onChange={(e: any) => updateItem(item.productId, 'location', e.target.value)} title="Room Location" placeholder="Room..."/>
                                             </div>
                                             <div className="text-[9px] md:text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 truncate" title={`Shelf: ${item.shelf_position}`}>
                                                 Shelf: <span className="text-amber-600">{item.shelf_position}</span>
                                             </div>
                                         </td>
-                                        {!isViewer ? <td className="p-2 md:p-3 text-center pt-3"><button onClick={() => setCart(cart.filter((_,i)=>i!==idx))} className="text-slate-300 hover:text-red-500 transition-colors p-1"><Trash2 size={16}/></button></td> : null}
+                                        {!isViewer ? <td className="p-2 md:p-3 text-center pt-3"><button onClick={() => setCart(cart.filter(c => c.productId !== item.productId))} className="text-slate-300 hover:text-red-500 transition-colors p-1"><Trash2 size={16}/></button></td> : null}
                                     </tr>
-                                ))}
+                                )})}
                             </tbody>
                         </table>
                     </div>
@@ -858,9 +941,9 @@ const Inbound = () => {
 
             <div className="bg-white p-3 md:p-4 border-t border-slate-200 flex justify-between items-center z-10 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] shrink-0">
                 <div className="text-xs md:text-sm text-slate-500 flex gap-2 md:gap-4 flex-col sm:flex-row">
-                    <span>SKUs: <span className="font-bold text-slate-800">{cart.length}</span></span>
+                    <span>แสดง: <span className="font-bold text-slate-800">{filteredCart.length}</span> / {cart.length} SKUs</span>
                     <span className="hidden sm:inline">|</span>
-                    <span>Total Base Qty: <span className="font-bold text-blue-600 text-sm md:text-base">{cart.reduce((a: number, b: any) => a + ((parseFloat(b.qtyReceived)||0)*(parseFloat(b.conversionRate)||1)), 0).toLocaleString(undefined, {maximumFractionDigits: 2})}</span></span>
+                    <span>Total Base Qty (รับจริง): <span className="font-bold text-emerald-600 text-sm md:text-base">{cart.reduce((a: number, b: any) => a + ((parseFloat(b.qtyReceived)||0)*(parseFloat(b.conversionRate)||1)), 0).toLocaleString(undefined, {maximumFractionDigits: 2})}</span></span>
                 </div>
                 
                 {!isViewer && (
@@ -872,10 +955,8 @@ const Inbound = () => {
         </div>
       </div>
 
-      {/* EXPORT MODAL */}
       {showExportModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            {/* Modal code คงเดิม */}
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden flex flex-col">
                 <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                     <h3 className="font-bold text-slate-800 flex items-center gap-2">

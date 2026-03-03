@@ -32,15 +32,9 @@ export default function DevToolsPage() {
           columns: [
               { key: 'product_id', label: 'SKU' },
               { key: 'product_name', label: 'Product Name' },
-<<<<<<< HEAD
-              { key: 'category', label: 'CATEGORY' },
-              { key: 'default_location', label: 'LOCATION' },
-              { key: 'shelf_position', label: 'SHELF' }, // 🟢 เพิ่มคอลัมน์ Shelf
-=======
               { key: 'category', label: 'Category' },
               { key: 'default_location', label: 'Location' },
-              { key: 'shelf_position', label: 'Shelf' }, // 🟢 เพิ่มคอลัมน์ Shelf
->>>>>>> 33ba19376f3c18a5ecd118d4aae1632b99f542c1
+              { key: 'shelf_position', label: 'Shelf' },
               { key: 'base_uom', label: 'Base Unit' },
               { key: 'standard_cost', label: 'Cost' },       
               { key: 'status', label: 'Status' }
@@ -93,13 +87,13 @@ export default function DevToolsPage() {
           templateData = {
               product_id: 'P-001',
               product_name: 'ตัวอย่าง สินค้า ก.',
-              category: 'SM', // 🟢 เปลี่ยนตัวอย่างให้ตรงกับบริบท Zone
+              category: 'SM',
               default_location: 'MAIN_WH',
-              shelf_position: 'A11', // 🟢 เพิ่มตัวอย่าง Shelf ใน Template
+              shelf_position: 'A11',
               base_uom: 'Piece',
               purchase_uom: 'Box',
               conversion_rate: 10,
-              standard_cost: 150.50, // 🟢 ตัวอย่างทศนิยม
+              standard_cost: 150.50,
               min_stock: 50,
               status: 'ACTIVE'
           };
@@ -141,7 +135,6 @@ export default function DevToolsPage() {
                     delete cleanRow['ชื่อสาขา']; delete cleanRow['Branch Name']; delete cleanRow['Branch ID'];
                 }
 
-                // 🟢 รองรับทศนิยมโดยใช้ parseFloat
                 if(cleanRow.standard_cost) cleanRow.standard_cost = parseFloat(cleanRow.standard_cost);
                 if(cleanRow.conversion_rate) cleanRow.conversion_rate = parseFloat(cleanRow.conversion_rate);
                 if(cleanRow.min_stock) cleanRow.min_stock = parseInt(cleanRow.min_stock);
@@ -149,7 +142,6 @@ export default function DevToolsPage() {
                 if(cleanRow.is_active === 'TRUE' || cleanRow.is_active === 'true' || cleanRow.is_active === true) cleanRow.is_active = true;
                 if(cleanRow.is_active === 'FALSE' || cleanRow.is_active === 'false' || cleanRow.is_active === false) cleanRow.is_active = false;
 
-                // 🟢 แปลงค่าให้เป็น String ป้องกันบั๊กกรณีผู้ใช้พิมพ์เลขเพียวๆ ลงในช่อง Shelf
                 if(cleanRow.shelf_position) cleanRow.shelf_position = String(cleanRow.shelf_position).trim();
 
                 return cleanRow;
@@ -333,7 +325,6 @@ export default function DevToolsPage() {
                                                 : col.key === 'is_active' ? (
                                                     <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${item[col.key] ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{item[col.key] ? 'TRUE' : 'FALSE'}</span>
                                                 )
-                                                // 🟢 แสดงป้ายกำกับ Zone, Room, Shelf ให้สวยงาม
                                                 : col.key === 'default_location' || col.key === 'shelf_position' || col.key === 'category' ? (
                                                     <span className={`text-[10px] font-black px-2 py-1 rounded uppercase tracking-wider ${item[col.key] && item[col.key] !== '-' ? (col.key === 'category' ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700 border border-amber-200') : 'bg-slate-100 text-slate-400'}`}>
                                                         {col.key === 'default_location' ? <MapPin size={10} className="inline mr-1 mb-0.5"/> : col.key === 'shelf_position' ? <Layers size={10} className="inline mr-1 mb-0.5"/> : <Tag size={10} className="inline mr-1 mb-0.5"/>}
@@ -392,7 +383,6 @@ export default function DevToolsPage() {
                             <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Product Name *</label><input name="product_name" defaultValue={currentItem?.product_name} required className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="ชื่อสินค้า"/></div>
                         </div>
                         
-                        {/* 🟢 อัปเดตส่วน Location Hierarchy ให้มีครบ 3 ช่อง (Zone, Room, Shelf) */}
                         <div className="grid grid-cols-3 gap-4">
                             <div><label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><Tag size={12}/> Zone (Category)</label><input name="category" defaultValue={currentItem?.category} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="e.g. SM"/></div>
                             <div><label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><MapPin size={12}/> Room (Location)</label><input name="default_location" defaultValue={currentItem?.default_location} className="w-full p-2.5 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl font-bold uppercase text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. MAIN_WH"/></div>
@@ -403,7 +393,6 @@ export default function DevToolsPage() {
                             <h4 className="text-xs font-bold text-cyan-700 mb-3 flex items-center gap-2"><DollarSign size={14}/> Base Unit & Standard Cost</h4>
                             <div className="grid grid-cols-3 gap-3">
                                 <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Base UOM</label><input name="base_uom" defaultValue={currentItem?.base_uom || 'Piece'} required className="w-full p-2 border border-cyan-200 rounded-lg text-sm text-center bg-white" placeholder="ชิ้น"/></div>
-                                {/* 🟢 รองรับการพิมพ์ทศนิยม */}
                                 <div className="col-span-2"><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Cost (per Base Unit)</label><input name="standard_cost" type="number" step="0.01" defaultValue={currentItem?.standard_cost} className="w-full p-2 border border-cyan-200 rounded-lg text-sm font-bold text-emerald-600 bg-white" placeholder="0.00"/></div>
                             </div>
                         </div>
