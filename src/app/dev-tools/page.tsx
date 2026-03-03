@@ -32,9 +32,9 @@ export default function DevToolsPage() {
           columns: [
               { key: 'product_id', label: 'SKU' },
               { key: 'product_name', label: 'Product Name' },
-              { key: 'category', label: 'Zone' },
-              { key: 'default_location', label: 'Room' },
-              { key: 'shelf_position', label: 'Shelf' }, // 🟢 เพิ่มคอลัมน์ Shelf
+              { key: 'category', label: 'CATEGORY' },
+              { key: 'default_location', label: 'LOCATION' },
+              { key: 'shelf_position', label: 'SHELF' }, // 🟢 เพิ่มคอลัมน์ Shelf
               { key: 'base_uom', label: 'Base Unit' },
               { key: 'standard_cost', label: 'Cost' },       
               { key: 'status', label: 'Status' }
