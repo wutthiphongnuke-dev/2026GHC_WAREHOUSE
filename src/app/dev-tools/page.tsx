@@ -32,9 +32,15 @@ export default function DevToolsPage() {
           columns: [
               { key: 'product_id', label: 'SKU' },
               { key: 'product_name', label: 'Product Name' },
+<<<<<<< HEAD
               { key: 'category', label: 'CATEGORY' },
               { key: 'default_location', label: 'LOCATION' },
               { key: 'shelf_position', label: 'SHELF' }, // 🟢 เพิ่มคอลัมน์ Shelf
+=======
+              { key: 'category', label: 'Category' },
+              { key: 'default_location', label: 'Location' },
+              { key: 'shelf_position', label: 'Shelf' }, // 🟢 เพิ่มคอลัมน์ Shelf
+>>>>>>> 33ba19376f3c18a5ecd118d4aae1632b99f542c1
               { key: 'base_uom', label: 'Base Unit' },
               { key: 'standard_cost', label: 'Cost' },       
               { key: 'status', label: 'Status' }
