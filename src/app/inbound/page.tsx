@@ -158,7 +158,7 @@ const Inbound = () => {
     } catch (error: any) { console.error("Error fetching master data:", error); } 
   };
 
-  // 🚀 ฟังก์ชันนำเข้า PO (อัปเกรดป้องกันข้อมูลซ้ำ + สร้าง Vendor อัตโนมัติ)
+  // 🚀 1. ฟังก์ชันนำเข้า PO (กันซ้ำ 100% + สร้าง Vendor อัตโนมัติกันบั๊ก FK)
   const handleImportPO = (event: any) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -175,7 +175,7 @@ const Inbound = () => {
             if (rows.length === 0) throw new Error("ไฟล์ว่างเปล่า (File Empty!)");
 
             const groupedPOs: Record<string, any> = {};
-            const incomingVendors = new Set<string>(); // เก็บรายชื่อ Vendor เพื่อตรวจสอบ
+            const incomingVendors = new Set<string>(); // เก็บรายชื่อ Vendor ทั้งหมดเพื่อเช็ค
 
             rows.forEach((row: any) => {
                 const rawPo = row['Purchase order'];
@@ -187,9 +187,10 @@ const Inbound = () => {
 
                 const cleanPoNo = String(rawPo || '').trim();
                 if (!cleanPoNo) return; 
-
-                const cleanVendor = String(rawVendor || '').trim();
-                if (cleanVendor) incomingVendors.add(cleanVendor); 
+                
+                // ถ้ารหัส Vendor ในไฟล์ว่างเปล่า ให้ใส่ค่า Default
+                const cleanVendor = String(rawVendor || '').trim() || 'UNKNOWN_VENDOR';
+                incomingVendors.add(cleanVendor);
                 
                 let dDate = rawDate;
                 let finalDate = getThaiDate(); 
@@ -210,7 +211,7 @@ const Inbound = () => {
                         po_number: cleanPoNo, 
                         vendor_id: cleanVendor, 
                         delivery_date: finalDate, 
-                        warehouse_code: String(rawWh || 'Main').trim(), 
+                        warehouse_code: String(rawWh || 'MAIN').trim(), 
                         status: 'PENDING',
                         lines: []
                     };
@@ -226,13 +227,13 @@ const Inbound = () => {
 
             const incomingPoNumbers = Object.keys(groupedPOs);
 
-            // 🟢 1. ตรวจสอบ PO ซ้ำ (ห้ามนำเข้าของเก่า)
+            // 🟢 STEP 1: ตรวจสอบ PO ซ้ำ (บล็อกการรับเข้าซ้ำเด็ดขาด)
             const { data: existingPOs, error: checkErr } = await supabase
                 .from('purchase_orders')
                 .select('po_number')
                 .in('po_number', incomingPoNumbers);
 
-            if (checkErr) throw checkErr;
+            if (checkErr) throw new Error("เช็ค PO ซ้ำล้มเหลว: " + checkErr.message);
 
             const existingPoSet = new Set(existingPOs?.map(p => p.po_number) || []);
             const duplicatedPOs = [];
@@ -240,41 +241,49 @@ const Inbound = () => {
 
             for (const poNo of incomingPoNumbers) {
                 if (existingPoSet.has(poNo)) {
-                    duplicatedPOs.push(poNo); // แยก PO ซ้ำออกไป
+                    duplicatedPOs.push(poNo); // ดัก PO ซ้ำ
                 } else {
-                    newPOs.push(poNo); // เก็บเฉพาะของใหม่
+                    newPOs.push(poNo); // PO ใหม่ที่ผ่านการคัดกรอง
                 }
             }
 
             if (newPOs.length === 0) {
-                alert(`⚠️ ข้อมูลในไฟล์ทั้งหมด (${duplicatedPOs.length} บิล) มีในระบบอยู่แล้ว\nระบบปฏิเสธการนำเข้าซ้ำเพื่อป้องกันข้อมูลคลาดเคลื่อนครับ`);
+                alert(`⚠️ บล็อกการนำเข้าสำเร็จ!\n\nข้อมูลในไฟล์ทั้งหมด (${duplicatedPOs.length} บิล) มีอยู่ในระบบแล้ว ระบบทำการข้าม (Skip) เพื่อป้องกันการรับของซ้ำซ้อนครับ`);
                 setLoading(false);
                 return;
             }
 
-            // 🟢 2. ตรวจสอบและสร้าง Vendor อัตโนมัติ (แก้ Error Foreign Key)
+            // 🟢 STEP 2: ตรวจสอบและสร้าง Vendor อัตโนมัติ (แก้บั๊ก FK Constraint)
             const uniqueIncomingVendors = Array.from(incomingVendors);
             if (uniqueIncomingVendors.length > 0) {
-                const { data: existingVendors } = await supabase
+                const { data: existingVendors, error: vCheckErr } = await supabase
                     .from('master_vendors')
                     .select('vendor_id')
                     .in('vendor_id', uniqueIncomingVendors);
 
+                if (vCheckErr) throw new Error("เช็ค Vendor ล้มเหลว: " + vCheckErr.message);
+
                 const existingVendorSet = new Set(existingVendors?.map(v => v.vendor_id) || []);
                 const missingVendors = uniqueIncomingVendors.filter(v => !existingVendorSet.has(v));
 
-                // ถ้ามี Vendor ไหนหายไปจากระบบ (ไม่มีใน Master) ให้ Insert เข้าไปอัตโนมัติ
+                // ถ้ามี Vendor หน้าใหม่ ให้สร้างใส่ Database ให้ก่อนเลย
                 if (missingVendors.length > 0) {
                     const vendorsToInsert = missingVendors.map(v => ({
                         vendor_id: v,
-                        vendor_name: `Vendor ${v} (Auto-added)`
+                        vendor_name: v === 'UNKNOWN_VENDOR' ? 'ไม่ระบุผู้จัดจำหน่าย' : `Auto Added (${v})`
                     }));
-                    await supabase.from('master_vendors').insert(vendorsToInsert);
+                    
+                    const { error: vInsertErr } = await supabase
+                        .from('master_vendors')
+                        .upsert(vendorsToInsert, { onConflict: 'vendor_id' });
+                        
+                    if (vInsertErr) throw new Error("สร้าง Vendor อัตโนมัติล้มเหลว: " + vInsertErr.message);
+                    
                     fetchMasterData(); // สั่งอัปเดต state ตัว Vendor ใหม่
                 }
             }
 
-            // 🟢 3. นำเข้าเฉพาะใบ PO อันใหม่ที่ถูกต้อง 100%
+            // 🟢 STEP 3: นำเข้าเฉพาะใบ PO อันใหม่เข้า Database
             const poDataToInsert: any[] = [];
             const poLinesToInsert: any[] = [];
 
@@ -289,24 +298,24 @@ const Inbound = () => {
 
             if (poDataToInsert.length > 0) {
                 const { error: poInsertErr } = await supabase.from('purchase_orders').insert(poDataToInsert);
-                if (poInsertErr) throw poInsertErr;
+                if (poInsertErr) throw new Error("PO Insert Error: " + poInsertErr.message);
 
                 if (poLinesToInsert.length > 0) {
                     const { error: linesInsertErr } = await supabase.from('po_lines').insert(poLinesToInsert);
-                    if (linesInsertErr) throw linesInsertErr;
+                    if (linesInsertErr) throw new Error("PO Lines Insert Error: " + linesInsertErr.message);
                 }
             }
             
-            // 🟢 แจ้งเตือนสรุปผลให้ User ทราบ
+            // 🟢 สรุปผลลัพธ์การทำงานให้ User ดู
             let alertMsg = `✅ นำเข้า PO ใหม่สำเร็จจำนวน: ${newPOs.length} เอกสาร\n`;
             if (duplicatedPOs.length > 0) {
-                alertMsg += `\n⚠️ ข้าม PO ซ้ำที่มีอยู่แล้ว: ${duplicatedPOs.length} เอกสาร (ระบบบล็อกเพื่อป้องกันข้อมูลผิดพลาด)`;
+                alertMsg += `\n⚠️ บล็อก PO ซ้ำที่มีอยู่แล้ว: ${duplicatedPOs.length} เอกสาร (ระบบข้ามการทำงานให้ปลอดภัย)`;
             }
             alert(alertMsg);
 
             fetchPendingPOs(); 
             
-        } catch (error: any) { alert("Import Error: " + error.message); }
+        } catch (error: any) { alert("🚨 เกิดข้อผิดพลาดในการทำงาน:\n\n" + error.message); }
         setLoading(false);
     };
     reader.readAsArrayBuffer(file);
