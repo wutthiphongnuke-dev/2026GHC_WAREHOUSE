@@ -523,11 +523,15 @@ const Inbound = () => {
     await new Promise(resolve => setTimeout(resolve, 10));
 
     try {
-        // บันทึก PO ลงตาราง inbound_receipts
+        // 🟢 แก้ปัญหา Foreign Key Error ของตาราง inbound_receipts
+        // ถ้าเป็นโหมด 'manual' ห้ามส่งค่า formData.refPO ไปลง column po_number เด็ดขาด (ส่งเป็น null แทน)
+        const actualPoNumber = (activeTab === 'po' && selectedPO) ? selectedPO.po_number : null;
+
+        // บันทึกใบรับเข้าลงตาราง inbound_receipts
         const { data: receiptData, error: receiptError } = await supabase
             .from('inbound_receipts')
             .insert([{
-                po_number: formData.refPO || null, 
+                po_number: actualPoNumber, 
                 delivery_timing: deliveryTiming,
                 truck_temperature: formData.truckTemp ? parseFloat(formData.truckTemp) : null,
                 document_reference: formData.docNo
@@ -535,7 +539,7 @@ const Inbound = () => {
             .select('receipt_id')
             .single();
             
-        if (receiptError) throw receiptError;
+        if (receiptError) throw new Error("inbound_receipts error: " + receiptError.message);
         const newReceiptId = receiptData.receipt_id;
 
         const inboundLinesToInsert = [];
@@ -612,13 +616,13 @@ const Inbound = () => {
             
             let thaiTimingStatus = deliveryTiming === 'LATE' ? 'ล่าช้า' : (deliveryTiming === 'EARLY' ? 'มาก่อนกำหนด' : 'ตรงเวลา');
 
-            // ฝัง Metadata PO ลงใน Transactions_log
+            // ฝัง Metadata PO ลงใน Transactions_log (ไม่ต้องมีในระบบ PO จริงๆ ก็เก็บค่า String ได้)
             logsToInsert.push({
                 transaction_type: 'INBOUND',
                 product_id: item.productId,
                 quantity_change: baseQty,
                 balance_after: currentBalances[item.productId],
-                remarks: `รับเข้าตามเอกสาร ${formData.docNo} ${formData.refPO ? `(อ้างอิง PO: ${formData.refPO})` : '(Manual)'}`,
+                remarks: `รับเข้าตามเอกสาร ${formData.docNo} ${formData.refPO ? `(อ้างอิง: ${formData.refPO})` : '(Manual)'}`,
                 metadata: {
                     po_number: formData.refPO || null, 
                     doc_no: formData.docNo, 
@@ -689,7 +693,7 @@ const Inbound = () => {
         setVendorSearchInput('');
         fetchPendingPOs(); 
 
-    } catch (error: any) { alert("Error: " + error.message); }
+    } catch (error: any) { alert("🚨 Error: " + error.message); }
     setLoading(false);
   };
 
