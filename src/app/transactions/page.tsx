@@ -40,6 +40,7 @@ export default function TransactionLogPage() {
   // 🟢 State สำหรับการแก้ไขข้อมูล (Edit Modal)
   const [editModal, setEditModal] = useState<any>(null);
   const [editQty, setEditQty] = useState('');
+  const [editPoNumber, setEditPoNumber] = useState(''); // 🟢 เพิ่ม State สำหรับแก้ PO
   const [editRemarks, setEditRemarks] = useState('');
 
   useEffect(() => {
@@ -64,8 +65,9 @@ export default function TransactionLogPage() {
       setLoading(true);
       setSyncProgress('กำลังเตรียมข้อมูล...');
       try {
+          // 🟢 ดึงข้อมูลสินค้า (เพิ่ม UOM และ Conversion สำหรับทำ Export)
           const [prodRes, branchRes] = await Promise.all([
-              supabase.from('master_products').select('product_id, product_name, category, base_uom'),
+              supabase.from('master_products').select('product_id, product_name, category, base_uom, purchase_uom, conversion_rate'),
               supabase.from('master_branches').select('branch_id, branch_name')
           ]);
 
@@ -123,11 +125,14 @@ export default function TransactionLogPage() {
               if (/(เสียหาย|แตก|เคลม|ชำรุด|พัง|หาย|ขาด)/i.test(tx.remarks || '')) anomalies.push("Damage/Loss");
 
               const dateObj = new Date(tx.transaction_date);
+              const pInfo = productMap[tx.product_id] || {};
 
               return {
                   ...tx,
-                  product_name: productMap[tx.product_id]?.product_name || 'Unknown',
-                  base_uom: productMap[tx.product_id]?.base_uom || 'Unit', 
+                  product_name: pInfo.product_name || 'Unknown',
+                  base_uom: pInfo.base_uom || 'Unit', 
+                  purchase_uom: pInfo.purchase_uom || pInfo.base_uom || 'Unit',
+                  conversion_rate: Number(pInfo.conversion_rate) || 1,
                   branch_name: bMap[tx.branch_id] || tx.branch_id || null, 
                   qty: Number(tx.quantity_change) || 0,
                   balance: Number(tx.balance_after) || 0,
@@ -148,7 +153,6 @@ export default function TransactionLogPage() {
       setLoading(false); setSyncProgress(''); 
   };
 
-  // 🗑️ ฟังก์ชันลบ Transaction (พร้อมดึงสต๊อกกลับ)
   const handleDeleteTransaction = async (tx: any) => {
       if (userRole === 'VIEWER') return alert('คุณไม่มีสิทธิ์ (View Only)');
       
@@ -183,7 +187,7 @@ export default function TransactionLogPage() {
       setActionLoading(false);
   };
 
-  // 🟢 ฟังก์ชันแก้ไข Transaction (ปรับสต๊อกตามส่วนต่าง)
+  // 🟢 ฟังก์ชันแก้ไข Transaction (ปรับสต๊อก + อัปเดต PO Number)
   const handleEditSubmit = async () => {
       if (!editModal) return;
       if (!editRemarks.trim()) return alert("กรุณาระบุหมายเหตุเพื่อเป็นหลักฐานในการแก้ไข");
@@ -198,7 +202,7 @@ export default function TransactionLogPage() {
           const newQty = Math.abs(Number(editQty)); 
           const diff = newQty - oldQty; 
 
-          // 1. ถ้ามีการเปลี่ยนตัวเลข ต้องไปคำนวณปรับสต๊อก
+          // ปรับยอดสต๊อกชดเชยส่วนต่าง
           if (diff !== 0) {
               const isOutbound = tx.transaction_type.includes('OUT') || tx.transaction_type.includes('DISP');
               const adjStock = isOutbound ? -diff : diff;
@@ -221,7 +225,6 @@ export default function TransactionLogPage() {
           const isNegative = tx.quantity_change < 0;
           const finalQtyChange = isNegative ? -newQty : newQty;
 
-          // บันทึกหมายเหตุพร้อมลายเซ็นว่าถูกแก้ไข
           let finalRemarks = tx.remarks || '';
           if (!finalRemarks.includes('[แก้ไข]')) {
               finalRemarks = `[แก้ไข: ${editRemarks}] ` + finalRemarks;
@@ -229,8 +232,12 @@ export default function TransactionLogPage() {
               finalRemarks = `[แก้ไข: ${editRemarks}] ` + finalRemarks.replace(/\[แก้ไข:.*?\] /, ''); 
           }
 
+          // 🟢 ดันเลข PO ใหม่เข้าไปใน Metadata
+          const finalPoNumber = editPoNumber.trim() ? editPoNumber.trim() : null;
+
           const newMeta = {
               ...tx.metadata,
+              po_number: finalPoNumber, // อัปเดตเลข PO
               is_edited: true,
               edited_by: userEmail,
               edited_at: new Date().toISOString(),
@@ -245,9 +252,9 @@ export default function TransactionLogPage() {
               })
               .eq('transaction_id', tx.transaction_id);
 
-          alert("✅ บันทึกการแก้ไข และปรับปรุงยอดสต๊อกในคลังสำเร็จ!");
+          alert("✅ บันทึกการแก้ไขสำเร็จ! ข้อมูลถูกอัปเดตเข้าระบบและสต๊อกเรียบร้อยแล้ว");
           setEditModal(null);
-          fetchData(); // รีเฟรชตาราง
+          fetchData(); // รีเฟรชตารางเพื่อให้ค้นหา PO ใหม่เจอทันที
       } catch (err: any) {
           alert("Error: " + err.message);
       }
@@ -269,7 +276,7 @@ export default function TransactionLogPage() {
           result = result.filter(tx => 
               (tx.product_id || '').toLowerCase().includes(lowerSearch) ||
               (tx.product_name || '').toLowerCase().includes(lowerSearch) ||
-              (tx.poNumber || '').toLowerCase().includes(lowerSearch) ||
+              (tx.poNumber || '').toLowerCase().includes(lowerSearch) || // ค้นหา PO เจอแน่นอน
               (tx.docRef || '').toLowerCase().includes(lowerSearch) ||
               (tx.branch_name || '').toLowerCase().includes(lowerSearch) ||
               (tx.transaction_id || '').toLowerCase().includes(lowerSearch)
@@ -287,45 +294,89 @@ export default function TransactionLogPage() {
       });
   }, [transactions, debouncedSearch, typeFilter, startDate, endDate, sortConfig]);
 
-  const openJourney = async (productInfo: any) => {
-      setJourneyModal(productInfo);
-      setJourneyLoading(true);
-      try {
-          const { data } = await supabase.from('transactions_log').select('*').eq('product_id', productInfo.product_id).order('transaction_date', { ascending: false }).limit(50);
-          setJourneyData(data || []);
-      } catch (err) { console.error(err); }
-      setJourneyLoading(false);
-  };
-
+  // 🟢 ฟังก์ชัน Export แบบแยกประเภทและเจาะลึก Conversion
   const handleExport = () => {
       if (filteredData.length === 0) return alert("ไม่มีข้อมูลสำหรับ Export");
-      const exportPayload = filteredData.map(tx => {
-          const refDocument = tx.poNumber !== '-' ? tx.poNumber : (tx.docRef !== '-' ? tx.docRef : '');
-          const rowData: any = {
+      
+      const wb = XLSX.utils.book_new();
+
+      // --- 1. แยกข้อมูล INBOUND ---
+      const inboundData = filteredData.filter(tx => tx.transaction_type === 'INBOUND');
+      if (inboundData.length > 0) {
+          const inExport = inboundData.map(tx => {
+              const baseQty = Math.abs(tx.qty);
+              const convRate = tx.conversion_rate || 1;
+              const rcvLargeQty = baseQty / convRate; // คำนวณกลับเป็นหน่วยใหญ่
+              const ordLargeQty = tx.orderedQty ? (tx.orderedQty / convRate) : rcvLargeQty;
+
+              return {
+                  'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
+                  'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
+                  'ใบอ้างอิง (Doc Ref)': tx.docRef !== '-' ? tx.docRef : '',
+                  'เลขที่ใบสั่งซื้อ (PO)': tx.poNumber !== '-' ? tx.poNumber : '',
+                  'รหัสสินค้า (SKU)': tx.product_id,
+                  'ชื่อสินค้า (Product Name)': tx.product_name,
+                  'ยอดสั่งซื้อ (Order Qty)': ordLargeQty,
+                  'หน่วยสั่งซื้อ (Purchase UOM)': tx.purchase_uom,
+                  'จำนวนรับจริง (Receive Qty)': rcvLargeQty,
+                  'หน่วยรับ (Receive UOM)': tx.purchase_uom,
+                  'ยอดเข้าสต๊อก (Base Qty)': baseQty,
+                  'หน่วยย่อย (Base UOM)': tx.base_uom,
+                  'อัตราแปลง (Conversion)': `1 ${tx.purchase_uom} = ${convRate} ${tx.base_uom}`,
+                  'คงเหลือ (Balance)': tx.balance,
+                  'สถานะส่ง (Timing)': tx.timingStatus,
+                  'หมายเหตุ (Remarks)': tx.remarks || '-',
+                  'สถานะ (Audit)': tx.metadata?.is_edited ? `แก้ไขโดย ${tx.metadata.edited_by}` : 'ปกติ',
+              };
+          });
+          const wsIn = XLSX.utils.json_to_sheet(inExport);
+          XLSX.utils.book_append_sheet(wb, wsIn, "รับเข้า (INBOUND)");
+      }
+
+      // --- 2. แยกข้อมูล OUTBOUND ---
+      const outboundData = filteredData.filter(tx => tx.transaction_type.includes('OUT') || tx.transaction_type.includes('DISP'));
+      if (outboundData.length > 0) {
+          const outExport = outboundData.map(tx => ({
               'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
               'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
-              'ประเภท (Type)': tx.transaction_type,
-              'PO Number / Doc Ref': refDocument,
-              'สาขา (Branch)': tx.branch_name || '-', 
+              'ใบเบิก/อ้างอิง (Doc Ref)': tx.docRef !== '-' ? tx.docRef : '',
+              'สาขาปลายทาง (Branch)': tx.branch_name || '-',
               'รหัสสินค้า (SKU)': tx.product_id,
               'ชื่อสินค้า (Product Name)': tx.product_name,
-              'หน่วย (Base Unit)': tx.base_uom,
-          };
-          if (tx.transaction_type === 'INBOUND') {
-              rowData['ยอดสั่งซื้อ (Ordered Qty)'] = tx.orderedQty || tx.qty; 
-              rowData['ยอดรับเข้าจริง (Received Qty)'] = tx.qty;
-              rowData['สถานะการส่ง (Timing)'] = tx.timingStatus;
-          } else {
-              rowData['ยอดจ่ายออก/ปรับ (Qty Change)'] = tx.qty;
-          }
-          rowData['ยอดคงเหลือ (Balance)'] = tx.balance;
-          rowData['หมายเหตุ (Remarks)'] = tx.remarks || '-';
-          rowData['สถานะ (Audit)'] = tx.metadata?.is_edited ? 'ถูกแก้ไข (Edited)' : 'ปกติ';
-          return rowData;
-      });
-      const ws = XLSX.utils.json_to_sheet(exportPayload);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Transactions");
+              'ยอดจ่ายออก (Outbound Qty)': Math.abs(tx.qty),
+              'หน่วย (Base UOM)': tx.base_uom,
+              'คงเหลือ (Balance)': tx.balance,
+              'หมายเหตุ (Remarks)': tx.remarks || '-',
+              'สถานะ (Audit)': tx.metadata?.is_edited ? `แก้ไขโดย ${tx.metadata.edited_by}` : 'ปกติ',
+          }));
+          const wsOut = XLSX.utils.json_to_sheet(outExport);
+          XLSX.utils.book_append_sheet(wb, wsOut, "จ่ายออก (OUTBOUND)");
+      }
+
+      // --- 3. แยกข้อมูล ADJUST (ปรับยอด) ---
+      const adjustData = filteredData.filter(tx => tx.transaction_type === 'ADJUST');
+      if (adjustData.length > 0) {
+          const adjExport = adjustData.map(tx => ({
+              'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
+              'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
+              'รหัสสินค้า (SKU)': tx.product_id,
+              'ชื่อสินค้า (Product Name)': tx.product_name,
+              'ยอดที่ปรับ (+/-)': tx.qty,
+              'หน่วย (Base UOM)': tx.base_uom,
+              'คงเหลือ (Balance)': tx.balance,
+              'สาเหตุ/หมายเหตุ (Remarks)': tx.remarks || '-',
+              'สถานะ (Audit)': tx.metadata?.is_edited ? `แก้ไขโดย ${tx.metadata.edited_by}` : 'ปกติ',
+          }));
+          const wsAdj = XLSX.utils.json_to_sheet(adjExport);
+          XLSX.utils.book_append_sheet(wb, wsAdj, "ปรับยอด (ADJUST)");
+      }
+
+      if (wb.SheetNames.length === 0) {
+          // Fallback ถ้ากรองแล้วได้ Data แปลกๆ
+          const wsFall = XLSX.utils.json_to_sheet(filteredData);
+          XLSX.utils.book_append_sheet(wb, wsFall, "Transactions");
+      }
+
       XLSX.writeFile(wb, `WMS_Transactions_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
@@ -339,12 +390,12 @@ export default function TransactionLogPage() {
   return (
     <div className="p-4 md:p-6 bg-slate-50 h-full flex flex-col overflow-hidden relative rounded-2xl font-sans">
       
-      {/* 🟢 Loading Overlay สำหรับตอนกดเซฟหรือลบ */}
+      {/* 🟢 Loading Overlay */}
       {actionLoading && (
           <div className="absolute inset-0 bg-white/70 backdrop-blur-sm z-[100] flex flex-col items-center justify-center">
               <Activity size={48} className="text-amber-500 animate-spin mb-4"/>
-              <div className="font-black text-slate-800 tracking-widest uppercase text-lg">Processing Inventory...</div>
-              <div className="text-slate-500 font-bold mt-1 text-sm">กำลังปรับปรุงฐานข้อมูลและยอดสต๊อก กรุณารอสักครู่</div>
+              <div className="font-black text-slate-800 tracking-widest uppercase text-lg">Processing Data...</div>
+              <div className="text-slate-500 font-bold mt-1 text-sm">กำลังบันทึกและปรับปรุงยอดสต๊อก กรุณารอสักครู่</div>
           </div>
       )}
 
@@ -363,7 +414,7 @@ export default function TransactionLogPage() {
                 <RefreshCw size={14} className={loading ? "animate-spin text-indigo-500" : ""} /> Sync
             </button>
             <button onClick={handleExport} disabled={loading} className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs md:text-sm font-bold shadow-md hover:bg-emerald-700 transition-colors flex items-center gap-1.5 disabled:opacity-50">
-                <Download size={14}/> Export
+                <Download size={14}/> Export Excel
             </button>
         </div>
       </div>
@@ -373,7 +424,7 @@ export default function TransactionLogPage() {
           <div className="relative flex-1 w-full xl:max-w-lg">
               <Search className="absolute left-3 top-2.5 text-blue-400" size={16}/>
               <input 
-                  type="text" placeholder="ค้นหา: รหัส, ชื่อ, สาขา, PO..." 
+                  type="text" placeholder="ค้นหา: รหัส, ชื่อ, สาขา, เลข PO..." 
                   className="w-full pl-9 pr-3 py-2 border-2 border-blue-50 rounded-xl text-sm font-medium outline-none focus:ring-0 focus:border-blue-400 transition-colors bg-slate-50 focus:bg-white"
                   value={searchTerm} onChange={e => { setSearchTerm(e.target.value); setCurrentPage(1); }}
               />
@@ -450,7 +501,6 @@ export default function TransactionLogPage() {
                                 {tx.branch_name && isOut && <div className="mt-1.5 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded w-max"><Store size={10} className="inline mr-1"/>{tx.branch_name}</div>}
                             </td>
                             
-                            {/* 🟢 คอลัมน์ QTY ปรับให้โชว์ป้าย EDITED */}
                             <td className={`p-3 text-right pr-6 bg-slate-50/50 border-x border-slate-100/50 ${tx.qty > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                                 <div className="flex flex-col items-end">
                                     <div className="font-black text-lg font-mono flex items-center gap-2">
@@ -478,6 +528,7 @@ export default function TransactionLogPage() {
                                             <button onClick={() => {
                                                 setEditModal(tx);
                                                 setEditQty(Math.abs(tx.qty).toString());
+                                                setEditPoNumber(tx.poNumber !== '-' ? tx.poNumber : ''); // โหลดเลข PO เดิมมาใส่ช่อง
                                                 setEditRemarks('');
                                             }} className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-amber-500 hover:text-white hover:bg-amber-500 hover:border-amber-500 transition-colors shadow-sm" title="Edit Transaction">
                                                 <Edit2 size={16}/>
@@ -507,7 +558,7 @@ export default function TransactionLogPage() {
       </div>
 
       {/* ======================================================= */}
-      {/* ✏️ MODAL: EDIT TRANSACTION (ฟีเจอร์ใหม่) */}
+      {/* ✏️ MODAL: EDIT TRANSACTION */}
       {/* ======================================================= */}
       {editModal && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4 animate-fade-in">
@@ -516,10 +567,7 @@ export default function TransactionLogPage() {
                       <h3 className="font-black text-lg text-slate-800 flex items-center gap-2"><Edit2 size={20} className="text-amber-500"/> แก้ไขรายการ (Edit)</h3>
                       <button onClick={() => setEditModal(null)} className="text-slate-400 hover:text-rose-500 transition-colors bg-white p-2 rounded-full shadow-sm"><X size={20}/></button>
                   </div>
-                  <div className="p-6 space-y-5">
-                      <div className="bg-blue-50 text-blue-700 p-3 rounded-xl text-[11px] border border-blue-100">
-                          💡 <b>คำแนะนำ:</b> เมื่อคุณแก้ไขจำนวน (Qty) ระบบจะทำการดึงสต๊อกและ <b>"ชดเชยส่วนต่างในคลังให้อัตโนมัติ"</b>
-                      </div>
+                  <div className="p-6 space-y-4">
                       
                       <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">ข้อมูลสินค้า</label>
@@ -527,7 +575,21 @@ export default function TransactionLogPage() {
                           <div className="text-xs text-slate-500 truncate mt-0.5">{editModal.product_name}</div>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-4">
+                      {/* 🟢 ช่องกรอกเลข PO (จะโชว์ให้แก้เฉพาะรายการ Inbound) */}
+                      {editModal.transaction_type === 'INBOUND' && (
+                          <div>
+                              <label className="text-xs font-bold text-blue-600 mb-1.5 flex items-center gap-1"><Receipt size={14}/> เพิ่ม/แก้ไข เลข PO อ้างอิง</label>
+                              <input 
+                                  type="text" 
+                                  placeholder="ระบุเลข PO..."
+                                  className="w-full p-2.5 border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm font-bold text-slate-700 bg-blue-50/30"
+                                  value={editPoNumber}
+                                  onChange={(e) => setEditPoNumber(e.target.value)}
+                              />
+                          </div>
+                      )}
+
+                      <div className="grid grid-cols-3 gap-4 border-t border-slate-100 pt-4">
                           <div className="col-span-2">
                               <label className="text-xs font-bold text-slate-600 mb-1.5 block">จำนวนที่ถูกต้อง (ใหม่) *</label>
                               <input 
@@ -547,8 +609,8 @@ export default function TransactionLogPage() {
                           <label className="text-xs font-bold text-slate-600 mb-1.5 block">หมายเหตุการแก้ไข (ต้องระบุ) *</label>
                           <textarea 
                               className="w-full p-3 border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-sm bg-white"
-                              rows={3}
-                              placeholder="ระบุสาเหตุ เช่น คีย์หน่วยผิด, ตรวจนับใหม่..."
+                              rows={2}
+                              placeholder="เช่น เพิ่มเลข PO ที่ตกหล่น, แก้ไขจำนวนรับ..."
                               value={editRemarks}
                               onChange={(e) => setEditRemarks(e.target.value)}
                           ></textarea>
@@ -561,7 +623,7 @@ export default function TransactionLogPage() {
                           disabled={actionLoading || !editQty || !editRemarks.trim()}
                           className="px-6 py-2.5 bg-amber-500 text-white font-bold rounded-xl hover:bg-amber-600 shadow-lg shadow-amber-200 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                          {actionLoading ? 'กำลังบันทึก...' : 'บันทึกและปรับสต๊อก'}
+                          {actionLoading ? 'กำลังบันทึก...' : 'บันทึกข้อมูล'}
                       </button>
                   </div>
               </div>
@@ -614,7 +676,6 @@ export default function TransactionLogPage() {
                           <span className="text-slate-500">Balance After</span><span className="font-bold text-slate-800 text-sm">{receiptModal.balance}</span>
                       </div>
 
-                      {/* 🟢 แสดงประวัติการแก้ไขในใบเสร็จ (Audit Trail) */}
                       {receiptModal.metadata?.is_edited && (
                           <div className="bg-amber-50 p-3 rounded-xl border border-amber-200 mt-4 text-amber-800 space-y-1.5">
                               <div className="font-black flex items-center gap-1.5 mb-2 text-amber-600 border-b border-amber-200/50 pb-2"><Edit2 size={14}/> ข้อมูลถูกแก้ไข (Edited)</div>
@@ -636,78 +697,6 @@ export default function TransactionLogPage() {
               </div>
           </div>
       )}
-
-      {/* ======================================================= */}
-      {/* 🗺️ MODAL: PRODUCT JOURNEY */}
-      {/* ======================================================= */}
-      {journeyModal && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 animate-fade-in">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
-                  <div className="p-5 border-b bg-indigo-50 flex justify-between items-center">
-                      <div>
-                          <h3 className="font-bold text-indigo-900 text-lg flex items-center gap-2"><GitBranch size={20}/> Product Journey Timeline</h3>
-                          <div className="flex items-center gap-2 mt-1">
-                              <span className="bg-white border border-indigo-200 text-indigo-700 text-[10px] font-mono px-2 py-0.5 rounded font-bold">{journeyModal.product_id}</span>
-                              <span className="text-sm font-bold text-indigo-800">{journeyModal.product_name}</span>
-                          </div>
-                      </div>
-                      <button onClick={()=>setJourneyModal(null)} className="text-indigo-400 hover:text-rose-500 p-2 bg-white rounded-full shadow-sm"><X size={20}/></button>
-                  </div>
-
-                  <div className="flex-1 overflow-auto p-6 bg-slate-50 custom-scrollbar">
-                      {journeyLoading ? (
-                          <div className="flex flex-col items-center justify-center h-40 text-indigo-500"><Activity className="animate-spin mb-2"/><span className="text-sm font-bold tracking-widest">Tracing Data...</span></div>
-                      ) : (
-                          <div className="relative border-l-2 border-indigo-200 ml-4 space-y-6 pb-4">
-                              {journeyData.map((j, i) => {
-                                  const isOut = j.transaction_type.includes('OUT');
-                                  const isIn = j.transaction_type === 'INBOUND';
-                                  const bName = branchMap[j.branch_id] || j.branch_id;
-                                  
-                                  return (
-                                  <div key={i} className="relative pl-6 group">
-                                      <div className={`absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-white ${isIn ? 'bg-emerald-500' : isOut ? 'bg-rose-500' : 'bg-amber-500'} shadow-sm group-hover:scale-125 transition-transform`}></div>
-                                      
-                                      <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm hover:shadow-md transition-shadow">
-                                          <div className="flex justify-between items-start mb-2">
-                                              <div className="flex items-center gap-2">
-                                                  <span className={`text-[10px] font-black px-2 py-0.5 rounded uppercase ${isIn ? 'bg-emerald-100 text-emerald-700' : isOut ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
-                                                      {j.transaction_type}
-                                                  </span>
-                                                  {j.metadata?.is_edited && <span className="text-[8px] bg-amber-100 text-amber-700 px-1 py-0.5 rounded font-bold border border-amber-200">EDITED</span>}
-                                                  <span className="text-xs text-slate-400 flex items-center gap-1 font-mono"><Clock size={12}/> {new Date(j.transaction_date).toLocaleString('th-TH')}</span>
-                                              </div>
-                                              <div className={`font-black text-lg ${Number(j.quantity_change) > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                                  {Number(j.quantity_change) > 0 ? '+' : ''}{j.quantity_change}
-                                              </div>
-                                          </div>
-                                          
-                                          <div className="text-sm text-slate-700 font-medium mb-2">
-                                              {isIn ? "รับสินค้าเข้าคลัง" : isOut ? `จัดส่งไปยังสาขา: ${bName || 'ไม่ระบุ'}` : "ปรับปรุงยอดสต๊อก / Cycle Count"}
-                                          </div>
-
-                                          <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-100 border-dashed">
-                                              <div className="text-[10px] text-slate-400 truncate max-w-[250px]" title={j.remarks}>
-                                                  📝 {j.remarks || 'ไม่มีหมายเหตุ'}
-                                              </div>
-                                              <div className="text-xs font-bold text-slate-800 bg-slate-100 px-2 py-1 rounded-lg">
-                                                  Balance: {j.balance_after}
-                                              </div>
-                                          </div>
-                                      </div>
-                                  </div>
-                              )})}
-                              <div className="relative pl-6">
-                                  <div className="absolute -left-[7px] top-1 w-3 h-3 bg-slate-300 rounded-full border-2 border-white"></div>
-                                  <div className="text-xs font-bold text-slate-400">จุดเริ่มต้นการบันทึกประวัติ (End of History)</div>
-                              </div>
-                          </div>
-                      )}
-                  </div>
-              </div>
-          </div>
-      )}
-
     </div>
   );
 }
