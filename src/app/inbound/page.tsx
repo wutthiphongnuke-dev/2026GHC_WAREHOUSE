@@ -31,7 +31,6 @@ const Inbound = () => {
   const [poSearchTerm, setPoSearchTerm] = useState<string>('');
   
   const [selectedPO, setSelectedPO] = useState<any>(null);
-  // 🟢 เปลี่ยนค่า Default ให้เป็น ON-TIME
   const [deliveryTiming, setDeliveryTiming] = useState<string>('ON-TIME');
 
   const [vendors, setVendors] = useState<any[]>([]);
@@ -159,7 +158,7 @@ const Inbound = () => {
     } catch (error: any) { console.error("Error fetching master data:", error); } 
   };
 
-  // 🟢 4. ระบบนำเข้า PO (อนุญาตให้อัปเดตทับ PO เดิมเพื่อแก้ไขได้)
+  // 🚀 ฟังก์ชันนำเข้า PO (อัปเกรดป้องกันข้อมูลซ้ำ + สร้าง Vendor อัตโนมัติ)
   const handleImportPO = (event: any) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -176,23 +175,42 @@ const Inbound = () => {
             if (rows.length === 0) throw new Error("ไฟล์ว่างเปล่า (File Empty!)");
 
             const groupedPOs: Record<string, any> = {};
-            
-            rows.forEach((row: any) => {
-                const poNo = row['Purchase order'];
-                if (!poNo) return;
-                
-                let dDate = row['Delivery date'];
-                if (typeof dDate === 'number') dDate = getThaiDate(new Date(Math.round((dDate - 25569) * 86400 * 1000)));
-                else if (!dDate) dDate = getThaiDate();
+            const incomingVendors = new Set<string>(); // เก็บรายชื่อ Vendor เพื่อตรวจสอบ
 
-                const cleanPoNo = String(poNo).trim();
+            rows.forEach((row: any) => {
+                const rawPo = row['Purchase order'];
+                const rawItem = row['Item number'];
+                const rawDate = row['Delivery date'];
+                const rawWh = row['Warehouse'];
+                const rawQty = row['Quantity'];
+                const rawVendor = row['Vendor account'];
+
+                const cleanPoNo = String(rawPo || '').trim();
+                if (!cleanPoNo) return; 
+
+                const cleanVendor = String(rawVendor || '').trim();
+                if (cleanVendor) incomingVendors.add(cleanVendor); 
+                
+                let dDate = rawDate;
+                let finalDate = getThaiDate(); 
+                
+                if (typeof dDate === 'number') {
+                    finalDate = getThaiDate(new Date(Math.round((dDate - 25569) * 86400 * 1000)));
+                } else if (dDate && typeof dDate === 'string') {
+                    dDate = dDate.trim();
+                    if (dDate.match(/^\d{4}-\d{2}-\d{2}/) || dDate.match(/^\d{2}\/\d{2}\/\d{4}/)) {
+                        finalDate = dDate.replace(/\//g, '-'); 
+                    } else if (!isNaN(Date.parse(dDate))) {
+                        finalDate = getThaiDate(new Date(dDate));
+                    }
+                }
 
                 if (!groupedPOs[cleanPoNo]) {
                     groupedPOs[cleanPoNo] = { 
                         po_number: cleanPoNo, 
-                        vendor_id: String(row['Vendor account'] || '').trim(), 
-                        delivery_date: dDate, 
-                        warehouse_code: row['Warehouse'] || 'Main', 
+                        vendor_id: cleanVendor, 
+                        delivery_date: finalDate, 
+                        warehouse_code: String(rawWh || 'Main').trim(), 
                         status: 'PENDING',
                         lines: []
                     };
@@ -200,41 +218,92 @@ const Inbound = () => {
                 
                 groupedPOs[cleanPoNo].lines.push({ 
                     po_number: cleanPoNo,
-                    product_id: String(row['Item number'] || '').trim(), 
-                    ordered_qty: parseFloat(row['Quantity']) || 0, 
+                    product_id: String(rawItem || '').trim(), 
+                    ordered_qty: parseFloat(rawQty) || 0, 
                     received_qty: 0 
                 });
             });
 
             const incomingPoNumbers = Object.keys(groupedPOs);
-            const poDataToUpsert: any[] = [];
-            const poLinesToInsert: any[] = [];
+
+            // 🟢 1. ตรวจสอบ PO ซ้ำ (ห้ามนำเข้าของเก่า)
+            const { data: existingPOs, error: checkErr } = await supabase
+                .from('purchase_orders')
+                .select('po_number')
+                .in('po_number', incomingPoNumbers);
+
+            if (checkErr) throw checkErr;
+
+            const existingPoSet = new Set(existingPOs?.map(p => p.po_number) || []);
+            const duplicatedPOs = [];
+            const newPOs = [];
 
             for (const poNo of incomingPoNumbers) {
+                if (existingPoSet.has(poNo)) {
+                    duplicatedPOs.push(poNo); // แยก PO ซ้ำออกไป
+                } else {
+                    newPOs.push(poNo); // เก็บเฉพาะของใหม่
+                }
+            }
+
+            if (newPOs.length === 0) {
+                alert(`⚠️ ข้อมูลในไฟล์ทั้งหมด (${duplicatedPOs.length} บิล) มีในระบบอยู่แล้ว\nระบบปฏิเสธการนำเข้าซ้ำเพื่อป้องกันข้อมูลคลาดเคลื่อนครับ`);
+                setLoading(false);
+                return;
+            }
+
+            // 🟢 2. ตรวจสอบและสร้าง Vendor อัตโนมัติ (แก้ Error Foreign Key)
+            const uniqueIncomingVendors = Array.from(incomingVendors);
+            if (uniqueIncomingVendors.length > 0) {
+                const { data: existingVendors } = await supabase
+                    .from('master_vendors')
+                    .select('vendor_id')
+                    .in('vendor_id', uniqueIncomingVendors);
+
+                const existingVendorSet = new Set(existingVendors?.map(v => v.vendor_id) || []);
+                const missingVendors = uniqueIncomingVendors.filter(v => !existingVendorSet.has(v));
+
+                // ถ้ามี Vendor ไหนหายไปจากระบบ (ไม่มีใน Master) ให้ Insert เข้าไปอัตโนมัติ
+                if (missingVendors.length > 0) {
+                    const vendorsToInsert = missingVendors.map(v => ({
+                        vendor_id: v,
+                        vendor_name: `Vendor ${v} (Auto-added)`
+                    }));
+                    await supabase.from('master_vendors').insert(vendorsToInsert);
+                    fetchMasterData(); // สั่งอัปเดต state ตัว Vendor ใหม่
+                }
+            }
+
+            // 🟢 3. นำเข้าเฉพาะใบ PO อันใหม่ที่ถูกต้อง 100%
+            const poDataToInsert: any[] = [];
+            const poLinesToInsert: any[] = [];
+
+            for (const poNo of newPOs) {
                 const poData = groupedPOs[poNo];
                 const poLinesData = poData.lines;
                 delete poData.lines;
 
-                poDataToUpsert.push(poData);
+                poDataToInsert.push(poData);
                 poLinesToInsert.push(...poLinesData); 
             }
 
-            if (poDataToUpsert.length > 0) {
-                // 🟢 เคลียร์ข้อมูล Lines เก่าทิ้งก่อน (ป้องกันข้อมูลเบิ้ลกรณีนำเข้าทับ PO เดิม)
-                await supabase.from('po_lines').delete().in('po_number', incomingPoNumbers);
-
-                // 🟢 บันทึกข้อมูลหัวบิลทับ (Upsert)
-                const { error: poInsertErr } = await supabase.from('purchase_orders').upsert(poDataToUpsert, { onConflict: 'po_number' });
+            if (poDataToInsert.length > 0) {
+                const { error: poInsertErr } = await supabase.from('purchase_orders').insert(poDataToInsert);
                 if (poInsertErr) throw poInsertErr;
 
-                // 🟢 บันทึกข้อมูลสินค้าใหม่
                 if (poLinesToInsert.length > 0) {
                     const { error: linesInsertErr } = await supabase.from('po_lines').insert(poLinesToInsert);
                     if (linesInsertErr) throw linesInsertErr;
                 }
             }
             
-            alert(`✅ นำเข้าและอัปเดต PO สำเร็จจำนวน: ${incomingPoNumbers.length} เอกสาร\n\n(💡 ระบบรองรับการนำเข้า PO เดิมซ้ำเพื่ออัปเดตแก้ไขยอดได้แล้ว)`);
+            // 🟢 แจ้งเตือนสรุปผลให้ User ทราบ
+            let alertMsg = `✅ นำเข้า PO ใหม่สำเร็จจำนวน: ${newPOs.length} เอกสาร\n`;
+            if (duplicatedPOs.length > 0) {
+                alertMsg += `\n⚠️ ข้าม PO ซ้ำที่มีอยู่แล้ว: ${duplicatedPOs.length} เอกสาร (ระบบบล็อกเพื่อป้องกันข้อมูลผิดพลาด)`;
+            }
+            alert(alertMsg);
+
             fetchPendingPOs(); 
             
         } catch (error: any) { alert("Import Error: " + error.message); }
@@ -445,7 +514,7 @@ const Inbound = () => {
     await new Promise(resolve => setTimeout(resolve, 10));
 
     try {
-        // 🟢 2. บันทึก PO ลงตาราง inbound_receipts เสมอ ไม่ว่าจะเป็นโหมด PO หรือ Manual
+        // บันทึก PO ลงตาราง inbound_receipts
         const { data: receiptData, error: receiptError } = await supabase
             .from('inbound_receipts')
             .insert([{
@@ -534,7 +603,7 @@ const Inbound = () => {
             
             let thaiTimingStatus = deliveryTiming === 'LATE' ? 'ล่าช้า' : (deliveryTiming === 'EARLY' ? 'มาก่อนกำหนด' : 'ตรงเวลา');
 
-            // 🟢 ฝัง Metadata PO ลงใน Transactions_log เพื่อโชว์ในหน้า Audit
+            // ฝัง Metadata PO ลงใน Transactions_log
             logsToInsert.push({
                 transaction_type: 'INBOUND',
                 product_id: item.productId,
@@ -797,7 +866,6 @@ const Inbound = () => {
                         <div className="font-bold text-xs md:text-sm truncate text-blue-600 mt-0.5">{formData.vendorName || '-'}</div>
                     </div>
 
-                    {/* 🟢 3. Dropdown ให้ผู้ใช้เลือกกำหนดเวลาจัดส่งแบบ Manual ได้เอง */}
                     <div className="col-span-1 lg:border-r border-slate-100">
                         <label className="text-[9px] md:text-[10px] uppercase font-bold text-slate-400">Timing</label>
                         <div className="relative mt-0.5">
