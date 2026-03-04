@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '../../supabaseClient'; 
-import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History, AlertTriangle, Printer, Filter } from 'lucide-react';
+import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History, AlertTriangle, Printer, Filter, ChevronDown } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface FormDataState {
@@ -31,14 +31,14 @@ const Inbound = () => {
   const [poSearchTerm, setPoSearchTerm] = useState<string>('');
   
   const [selectedPO, setSelectedPO] = useState<any>(null);
-  const [deliveryTiming, setDeliveryTiming] = useState<string>('');
+  // 🟢 เปลี่ยนค่า Default ให้เป็น ON-TIME
+  const [deliveryTiming, setDeliveryTiming] = useState<string>('ON-TIME');
 
   const [vendors, setVendors] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [productSearchTerm, setProductSearchTerm] = useState<string>('');
 
   const [cart, setCart] = useState<any[]>([]);
-  
   const [cartSearchTerm, setCartSearchTerm] = useState<string>('');
 
   const [formData, setFormData] = useState<FormDataState>({
@@ -159,7 +159,7 @@ const Inbound = () => {
     } catch (error: any) { console.error("Error fetching master data:", error); } 
   };
 
-  // 🚀🚀🚀 ระบบนำเข้า PO ความเร็วสูง (High-Performance Bulk Import) 🚀🚀🚀
+  // 🟢 4. ระบบนำเข้า PO (อนุญาตให้อัปเดตทับ PO เดิมเพื่อแก้ไขได้)
   const handleImportPO = (event: any) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -207,62 +207,35 @@ const Inbound = () => {
             });
 
             const incomingPoNumbers = Object.keys(groupedPOs);
-
-            // 1. เช็คเลข PO ทั้งหมดว่ามีอันไหนอยู่ในระบบแล้วบ้าง
-            const { data: existingPOs, error: checkErr } = await supabase
-                .from('purchase_orders')
-                .select('po_number')
-                .in('po_number', incomingPoNumbers);
-
-            if (checkErr) throw checkErr;
-
-            const existingPoSet = new Set(existingPOs?.map(p => p.po_number) || []);
-            const duplicatedPOs = [];
-            const newPOs = [];
-
-            // 2. แยกของเก่า (ข้าม) และของใหม่ (เตรียมเข้า)
-            for (const poNo of incomingPoNumbers) {
-                if (existingPoSet.has(poNo)) {
-                    duplicatedPOs.push(poNo); 
-                } else {
-                    newPOs.push(poNo); 
-                }
-            }
-
-            if (duplicatedPOs.length > 0) {
-                const displayDupes = duplicatedPOs.length > 5 ? duplicatedPOs.slice(0, 5).join('\n- ') + `\n...และอื่นๆ รวม ${duplicatedPOs.length} รายการ` : '- ' + duplicatedPOs.join('\n- ');
-                alert(`⚠️ ปฏิเสธการนำเข้า PO ซ้ำ!\n\nระบบพบว่าเลข PO ต่อไปนี้ถูกนำเข้าและบันทึกในระบบไปแล้ว:\n${displayDupes}\n\nระบบจะทำการข้ามรายการเหล่านี้ (หากต้องการรับของเซ็ตนี้ใหม่ กรุณาเปลี่ยนชื่อเลข PO ในไฟล์ Excel)\n\nระบบจะนำเข้าเฉพาะ PO เลขใหม่ให้เท่านั้นครับ`);
-            }
-
-            // ⚡⚡⚡ กระบวนการ Bulk Insert (เร็วกว่าเดิม 10-100 เท่า) ⚡⚡⚡
-            const poDataToInsert: any[] = [];
+            const poDataToUpsert: any[] = [];
             const poLinesToInsert: any[] = [];
 
-            for (const poNo of newPOs) {
+            for (const poNo of incomingPoNumbers) {
                 const poData = groupedPOs[poNo];
                 const poLinesData = poData.lines;
                 delete poData.lines;
 
-                poDataToInsert.push(poData);
-                poLinesToInsert.push(...poLinesData); // เอา array ย่อยมายัดรวมกัน
+                poDataToUpsert.push(poData);
+                poLinesToInsert.push(...poLinesData); 
             }
 
-            if (poDataToInsert.length > 0) {
-                // ยิง 1 ที บันทึกหัว PO ทั้งหมดรวดเดียว
-                const { error: poInsertErr } = await supabase.from('purchase_orders').insert(poDataToInsert);
+            if (poDataToUpsert.length > 0) {
+                // 🟢 เคลียร์ข้อมูล Lines เก่าทิ้งก่อน (ป้องกันข้อมูลเบิ้ลกรณีนำเข้าทับ PO เดิม)
+                await supabase.from('po_lines').delete().in('po_number', incomingPoNumbers);
+
+                // 🟢 บันทึกข้อมูลหัวบิลทับ (Upsert)
+                const { error: poInsertErr } = await supabase.from('purchase_orders').upsert(poDataToUpsert, { onConflict: 'po_number' });
                 if (poInsertErr) throw poInsertErr;
 
-                // ยิงอีก 1 ที บันทึกรายการสินค้าทั้งหมดรวดเดียว
+                // 🟢 บันทึกข้อมูลสินค้าใหม่
                 if (poLinesToInsert.length > 0) {
                     const { error: linesInsertErr } = await supabase.from('po_lines').insert(poLinesToInsert);
                     if (linesInsertErr) throw linesInsertErr;
                 }
             }
             
-            if (newPOs.length > 0) {
-                alert(`✅ นำเข้า PO ใหม่เสร็จสมบูรณ์จำนวน: ${newPOs.length} เอกสาร (ประมวลผลความเร็วสูง)`);
-                fetchPendingPOs(); 
-            }
+            alert(`✅ นำเข้าและอัปเดต PO สำเร็จจำนวน: ${incomingPoNumbers.length} เอกสาร\n\n(💡 ระบบรองรับการนำเข้า PO เดิมซ้ำเพื่ออัปเดตแก้ไขยอดได้แล้ว)`);
+            fetchPendingPOs(); 
             
         } catch (error: any) { alert("Import Error: " + error.message); }
         setLoading(false);
@@ -472,11 +445,12 @@ const Inbound = () => {
     await new Promise(resolve => setTimeout(resolve, 10));
 
     try {
+        // 🟢 2. บันทึก PO ลงตาราง inbound_receipts เสมอ ไม่ว่าจะเป็นโหมด PO หรือ Manual
         const { data: receiptData, error: receiptError } = await supabase
             .from('inbound_receipts')
             .insert([{
-                po_number: activeTab === 'po' ? formData.refPO : null,
-                delivery_timing: deliveryTiming || 'ON-TIME',
+                po_number: formData.refPO || null, 
+                delivery_timing: deliveryTiming,
                 truck_temperature: formData.truckTemp ? parseFloat(formData.truckTemp) : null,
                 document_reference: formData.docNo
             }])
@@ -557,16 +531,18 @@ const Inbound = () => {
 
             currentBalances[item.productId] += baseQty;
             const baseOrderedQty = item.qtyOrdered ? (parseFloat(item.qtyOrdered) * convRate) : 0;
+            
             let thaiTimingStatus = deliveryTiming === 'LATE' ? 'ล่าช้า' : (deliveryTiming === 'EARLY' ? 'มาก่อนกำหนด' : 'ตรงเวลา');
 
+            // 🟢 ฝัง Metadata PO ลงใน Transactions_log เพื่อโชว์ในหน้า Audit
             logsToInsert.push({
                 transaction_type: 'INBOUND',
                 product_id: item.productId,
                 quantity_change: baseQty,
                 balance_after: currentBalances[item.productId],
-                remarks: `รับเข้าตามเอกสาร ${formData.docNo} ${activeTab === 'po' ? `(อ้างอิง PO: ${formData.refPO})` : '(Manual)'}`,
+                remarks: `รับเข้าตามเอกสาร ${formData.docNo} ${formData.refPO ? `(อ้างอิง PO: ${formData.refPO})` : '(Manual)'}`,
                 metadata: {
-                    po_number: activeTab === 'po' ? formData.refPO : null, 
+                    po_number: formData.refPO || null, 
                     doc_no: formData.docNo, 
                     scheduled_date: activeTab === 'po' && selectedPO ? selectedPO.delivery_date : null,
                     time_status: thaiTimingStatus,
@@ -630,7 +606,7 @@ const Inbound = () => {
             window.location.href = '/print-labels';
         }
 
-        setCart([]); setSelectedPO(null); setCartSearchTerm('');
+        setCart([]); setSelectedPO(null); setCartSearchTerm(''); setDeliveryTiming('ON-TIME');
         setFormData((prev: FormDataState) => ({...prev, docNo: `RCV-${Date.now()}`, truckTemp: '', vendorId: '', vendorName: '', refPO: ''}));
         setVendorSearchInput('');
         fetchPendingPOs(); 
@@ -821,9 +797,25 @@ const Inbound = () => {
                         <div className="font-bold text-xs md:text-sm truncate text-blue-600 mt-0.5">{formData.vendorName || '-'}</div>
                     </div>
 
+                    {/* 🟢 3. Dropdown ให้ผู้ใช้เลือกกำหนดเวลาจัดส่งแบบ Manual ได้เอง */}
                     <div className="col-span-1 lg:border-r border-slate-100">
                         <label className="text-[9px] md:text-[10px] uppercase font-bold text-slate-400">Timing</label>
-                        <div className={`font-bold text-xs md:text-sm ${deliveryTiming === 'LATE' ? 'text-red-500' : 'text-green-600'}`}>{deliveryTiming || '-'}</div>
+                        <div className="relative mt-0.5">
+                            <select 
+                                value={deliveryTiming} 
+                                onChange={(e) => setDeliveryTiming(e.target.value)}
+                                disabled={isViewer}
+                                className={`w-full font-bold text-xs md:text-sm border-none focus:ring-0 p-0 bg-transparent outline-none cursor-pointer appearance-none pr-4 ${
+                                    deliveryTiming === 'LATE' ? 'text-red-500' :
+                                    deliveryTiming === 'EARLY' ? 'text-blue-500' : 'text-green-600'
+                                }`}
+                            >
+                                <option value="ON-TIME" className="text-green-600">ตรงเวลา (ON-TIME)</option>
+                                <option value="LATE" className="text-red-500">ล่าช้า (LATE)</option>
+                                <option value="EARLY" className="text-blue-500">ก่อนกำหนด (EARLY)</option>
+                            </select>
+                            <ChevronDown size={12} className="absolute right-0 top-1 text-slate-400 pointer-events-none"/>
+                        </div>
                     </div>
                     
                     <div className="col-span-1">
