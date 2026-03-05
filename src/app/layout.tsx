@@ -47,9 +47,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         const role = roleData?.role || 'VIEWER';
         setUserRole(role);
 
-        // 🟢 เพิ่มการบล็อก URL สำหรับ Advanced Dashboard ไม่ให้ระดับอื่นเข้าได้
+        // 🟢 เพิ่ม /master-data เข้าไปในลิสต์ที่ VIEWER ห้ามเข้า
         if (role === 'VIEWER') {
-          const blockedForViewer = ['/inbound', '/outbound', '/transactions', '/cycle-count', '/print-labels', '/planning', '/forecast-studio', '/dev-tools', '/advanced-dashboard'];
+          const blockedForViewer = ['/inbound', '/outbound', '/transactions', '/cycle-count', '/print-labels', '/planning', '/forecast-studio', '/master-data', '/dev-tools', '/advanced-dashboard'];
           if (blockedForViewer.some(route => pathname.startsWith(route))) router.push('/dashboard'); 
         } else if (role === 'STAFF') {
           const blockedForStaff = ['/dev-tools', '/advanced-dashboard'];
@@ -195,11 +195,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   )}
                 </NavDropdown>
 
+                {/* 🗄️ ฐานข้อมูลหลัก (เพิ่มใหม่) */}
+                {userRole !== 'VIEWER' && (
+                  <NavItem href="/master-data" icon={<Database size={16} />} label="Master Data" />
+                )}
+
                 {/* ⚙️ กลุ่ม Admin เท่านั้น */}
                 {userRole === 'ADMIN' && (
                   <>
                     <div className="w-[1px] h-5 bg-slate-700/50 mx-2 shrink-0"></div>
-                    {/* 🟢 เพิ่มเมนู Advanced Dashboard */}
                     <NavItem href="/advanced-dashboard" icon={<Activity size={16} />} label="Adv. Dashboard" isDev />
                     <NavItem href="/dev-tools" icon={<Settings size={16} />} label="Dev Tools" isDev />
                   </>
@@ -332,11 +336,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                             )}
                         </MobileNavGroup>
 
+                        {/* 🗄️ ฐานข้อมูลหลัก (เพิ่มใหม่) */}
+                        {userRole !== 'VIEWER' && (
+                          <MobileNavItem href="/master-data" icon={<Database size={18}/>} label="Master Data" onClick={() => setIsMobileMenuOpen(false)}/>
+                        )}
+
                         <div className="h-px bg-slate-800/60 my-2 mx-2"></div>
 
                         <MobileNavItem href="/settings" icon={<User size={18}/>} label="Profile & Settings" onClick={() => setIsMobileMenuOpen(false)}/>
                         
-                        {/* 🟢 เพิ่มเมนู Advanced Dashboard บนมือถือ สำหรับแอดมิน */}
                         {userRole === 'ADMIN' && (
                           <>
                              <MobileNavItem href="/advanced-dashboard" icon={<Activity size={18}/>} label="Adv. Dashboard" isDev onClick={() => setIsMobileMenuOpen(false)}/>

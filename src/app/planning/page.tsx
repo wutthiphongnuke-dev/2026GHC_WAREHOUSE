@@ -6,7 +6,7 @@ import {
     Calendar as CalIcon, Save, Search, Package, TrendingUp, TrendingDown, 
     Minus, X, Filter, BarChart2, Zap, BrainCircuit, Activity, CheckCircle, 
     ShoppingCart, ArrowRight, MapPin, ChevronLeft, ChevronRight, Download, 
-    FileSpreadsheet, Flame, Wand2, Settings, AlertTriangle, Plus, Trash2, RefreshCw
+    FileSpreadsheet, Flame, Wand2, Settings, AlertTriangle, Plus, Trash2, RefreshCw, Truck, Sparkles, Users
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -30,11 +30,10 @@ export default function PlanningPage() {
   const [syncProgress, setSyncProgress] = useState(''); 
   
   const [products, setProducts] = useState<any[]>([]);
-  const [historicalDemand, setHistoricalDemand] = useState<any[]>([]); 
+  const [historicalDemandMap, setHistoricalDemandMap] = useState<Record<string, any[]>>({}); 
   const [pendingPOs, setPendingPOs] = useState<any[]>([]);
   const [plannedOrders, setPlannedOrders] = useState<any[]>([]);
 
-  // 🟢 Manage Items States (เพิ่ม State สำหรับ Category)
   const [manageSearch, setManageSearch] = useState('');
   const [manageLocation, setManageLocation] = useState('ALL');
   const [manageCategory, setManageCategory] = useState('ALL');
@@ -47,12 +46,16 @@ export default function PlanningPage() {
   const [searchTerm, setSearchTerm] = useState('');
   
   const [baseAvgPeriod, setBaseAvgPeriod] = useState<number>(30); 
-  const [forecastStrategy, setForecastStrategy] = useState<'MA' | 'TREND' | 'PEAK' | 'ARIMA'>('ARIMA'); 
+  // 🟢 เพิ่ม HOLT_WINTERS ลงในประเภทของ AI Forecast
+  const [forecastStrategy, setForecastStrategy] = useState<'MA' | 'TREND' | 'PEAK' | 'ARIMA' | 'HOLT_WINTERS'>('HOLT_WINTERS'); 
   const [demandFactor, setDemandFactor] = useState<number>(1.0); 
 
   const [cellModal, setCellModal] = useState<any>(null); 
   const [liveConversion, setLiveConversion] = useState(0);
   const [editingProduct, setEditingProduct] = useState<any>(null); 
+
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportConfig, setExportConfig] = useState({ splitVendor: true, sortBy: 'VENDOR' });
 
   useEffect(() => {
     const savedRooms = localStorage.getItem('wms_custom_planning_rooms');
@@ -92,22 +95,42 @@ export default function PlanningPage() {
         const startOfMonth = new Date(Number(year), Number(month) - 1, 1).toISOString().split('T')[0];
         const endOfMonth = new Date(Number(year), Number(month), 0).toISOString().split('T')[0];
 
-        const [pRes, iRes, poHeadRes, poLineRes, planRes] = await Promise.all([
+        const [pRes, iRes, poHeadRes, poLineRes, planRes, vRes] = await Promise.all([
             supabase.from('master_products').select('*'),
             supabase.from('inventory_lots').select('product_id, quantity'),
             supabase.from('purchase_orders').select('po_number, delivery_date').in('status', ['PENDING', 'PARTIAL']),
             supabase.from('po_lines').select('*'),
-            supabase.from('planning_orders').select('*').gte('plan_date', startOfMonth).lte('plan_date', endOfMonth)
+            supabase.from('planning_orders').select('*').gte('plan_date', startOfMonth).lte('plan_date', endOfMonth),
+            supabase.from('master_vendors').select('vendor_id, vendor_name')
         ]);
+
+        const vendorMap: Record<string, string> = {};
+        (vRes.data || []).forEach(v => vendorMap[v.vendor_id] = v.vendor_name);
 
         const stockMap: Record<string, number> = {};
         (iRes.data || []).forEach((lot: any) => { stockMap[lot.product_id] = (stockMap[lot.product_id] || 0) + Number(lot.quantity); });
+
+        const poIncomingList: any[] = [];
+        const poPendingSumMap: Record<string, number> = {};
+        
+        if (poHeadRes.data && poLineRes.data) {
+            poLineRes.data.forEach((line: any) => {
+                const header = poHeadRes.data.find((h:any) => h.po_number === line.po_number);
+                const pendingQty = Number(line.ordered_qty) - Number(line.received_qty);
+                if (pendingQty > 0 && header?.delivery_date) {
+                    poIncomingList.push({ product_id: line.product_id, qty: pendingQty, date: header.delivery_date });
+                    poPendingSumMap[line.product_id] = (poPendingSumMap[line.product_id] || 0) + pendingQty;
+                }
+            });
+            setPendingPOs(poIncomingList);
+        }
 
         const safeProducts = (pRes.data || []).map(p => ({
             ...p,
             product_id: p.product_id || p.id,
             product_name: p.product_name || 'Unknown Item',
             current_qty: stockMap[p.product_id || p.id] || 0,
+            total_pending_po: poPendingSumMap[p.product_id || p.id] || 0,
             planning_room: p.planning_room || null,
             default_location: p.default_location || 'Unassigned',
             category: p.category || 'Unknown',
@@ -115,18 +138,13 @@ export default function PlanningPage() {
             purchase_uom: p.purchase_uom || p.base_uom || 'Unit',
             conversion_rate: Number(p.conversion_rate) || 1,
             min_stock: Number(p.min_stock) || 0,
-            moq: Number(p.moq) || 1 
+            moq: Number(p.moq) || 1,
+            vendor_id: p.vendor_id || null,
+            vendor_name: vendorMap[p.vendor_id] || p.vendor_id || 'ไม่ระบุคู่ค้า (Unassigned)',
+            lead_time: Number(p.lead_time) || 3 
         }));
         setProducts(safeProducts);
         setPlannedOrders(planRes.data || []);
-
-        if (poHeadRes.data && poLineRes.data) {
-            const incoming = poLineRes.data.map((line: any) => {
-                const header = poHeadRes.data.find((h:any) => h.po_number === line.po_number);
-                return { product_id: line.product_id, qty: Number(line.ordered_qty) - Number(line.received_qty), date: header?.delivery_date };
-            }).filter((i:any) => i.qty > 0 && i.date);
-            setPendingPOs(incoming);
-        }
 
         setSyncProgress('กำลังดึงประวัติการเบิกจ่าย...');
         let allTransactions: any[] = [];
@@ -141,26 +159,21 @@ export default function PlanningPage() {
                 .gte('transaction_date', dateLimitStr)
                 .range(offset, offset + limitSize - 1); 
 
-            if (tErr) {
-                console.error("Error loading transactions:", tErr);
-                break;
-            }
+            if (tErr) break;
 
             if (tData && tData.length > 0) {
                 allTransactions = [...allTransactions, ...tData];
                 offset += limitSize;
                 setSyncProgress(`ดึงประวัติแล้ว ${allTransactions.length} รายการ...`);
-                
-                if (tData.length < limitSize) {
-                    hasMore = false; 
-                }
+                if (tData.length < limitSize) hasMore = false; 
             } else {
                 hasMore = false;
             }
         }
 
         setSyncProgress('กำลังประมวลผลข้อมูล...');
-        const pastDemand: any[] = [];
+        const pastDemandMap: Record<string, any[]> = {};
+        
         allTransactions.forEach(t => {
             if (!t.transaction_date) return;
             const type = String(t.transaction_type).toUpperCase();
@@ -172,17 +185,13 @@ export default function PlanningPage() {
             if (isOutboundKeyword || isNegativeButNotAdjust) {
                 const d = new Date(t.transaction_date);
                 if (isNaN(d.getTime())) return;
-                
                 const localDateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
                 
-                pastDemand.push({
-                    product_id: t.product_id,
-                    date: localDateStr, 
-                    qty: Math.abs(qty)
-                });
+                if (!pastDemandMap[t.product_id]) pastDemandMap[t.product_id] = [];
+                pastDemandMap[t.product_id].push({ date: localDateStr, qty: Math.abs(qty) });
             }
         });
-        setHistoricalDemand(pastDemand);
+        setHistoricalDemandMap(pastDemandMap);
 
     } catch (error) { console.error("Error fetching data:", error); }
     setLoading(false);
@@ -220,8 +229,6 @@ export default function PlanningPage() {
       try {
           await supabase.from('master_products').update({ planning_room: assignToRoomId }).eq('product_id', product.product_id);
       } catch (e) {
-          console.error("Failed to save assignment", e);
-          setProducts(products.map(p => p.product_id === product.product_id ? { ...p, planning_room: product.planning_room } : p));
           alert("ไม่สามารถบันทึกข้อมูลได้ กรุณาลองใหม่");
       }
   };
@@ -231,34 +238,30 @@ export default function PlanningPage() {
       if(isViewer) return;
       const formData = new FormData(e.currentTarget);
       const newMinStock = Number(formData.get('min_stock'));
+      const newLeadTime = Number(formData.get('lead_time'));
 
-      if (newMinStock < 0) return alert("ห้ามใส่ค่าติดลบ");
+      if (newMinStock < 0 || newLeadTime < 0) return alert("ห้ามใส่ค่าติดลบ");
 
       setLoading(true);
       try {
-          const { error } = await supabase.from('master_products')
-              .update({ min_stock: newMinStock })
-              .eq('product_id', editingProduct.product_id);
-          
-          if (error) throw error;
-          
-          setProducts(products.map(p => p.product_id === editingProduct.product_id ? { ...p, min_stock: newMinStock } : p));
+          await supabase.from('master_products').update({ min_stock: newMinStock, lead_time: newLeadTime }).eq('product_id', editingProduct.product_id);
+          setProducts(products.map(p => p.product_id === editingProduct.product_id ? { ...p, min_stock: newMinStock, lead_time: newLeadTime } : p));
           setEditingProduct(null);
       } catch (error: any) { alert("Update Error: " + error.message); }
       setLoading(false);
   };
 
-  // ==================== PART 2: ADVANCED FORECASTING LOGIC ====================
+  // ==================== PART 2: ADVANCED FORECASTING LOGIC (INCLUDING HOLT-WINTERS) ====================
   const getProductForecast = (product: any) => {
       const pid = product.product_id;
-      let runningStock = product.current_qty;
-      const today = new Date(); today.setHours(0,0,0,0);
+      let runningStock = Math.max(0, product.current_qty); 
       
+      const today = new Date(); today.setHours(0,0,0,0);
       const [year, month] = selectedMonth.split('-');
       const planStart = new Date(Number(year), Number(month) - 1, 1);
       const daysInMonth = new Date(Number(year), Number(month), 0).getDate();
 
-      const txs = historicalDemand.filter(t => t.product_id === pid);
+      const txs = historicalDemandMap[pid] || [];
       
       let totalBasePeriod = 0; let total7d = 0;
       let maxDaily = 0;
@@ -267,7 +270,9 @@ export default function PlanningPage() {
       const dBase = new Date(today); dBase.setDate(dBase.getDate() - baseAvgPeriod + 1);
       const d7 = new Date(today); d7.setDate(d7.getDate() - 7 + 1);
 
-      for (let i = 0; i < baseAvgPeriod; i++) {
+      // 🟢 การสร้าง Map วันที่แบบย้อนกลับให้เรียงตาม Chronological Order (เก่าสุด ไปหา ใหม่สุด)
+      // สำคัญมากสำหรับ Holt-Winters เพราะต้องใช้ข้อมูลเรียงตามเวลา
+      for (let i = baseAvgPeriod - 1; i >= 0; i--) {
           const tempD = new Date(today);
           tempD.setDate(tempD.getDate() - i);
           const tempDStr = `${tempD.getFullYear()}-${String(tempD.getMonth()+1).padStart(2,'0')}-${String(tempD.getDate()).padStart(2,'0')}`;
@@ -281,13 +286,9 @@ export default function PlanningPage() {
           
           if (tDate >= dBase && tDate <= today) {
               totalBasePeriod += qty;
-              if (dailyUsageMap[t.date] !== undefined) {
-                  dailyUsageMap[t.date] += qty;
-              }
+              if (dailyUsageMap[t.date] !== undefined) dailyUsageMap[t.date] += qty;
           }
-          if (tDate >= d7 && tDate <= today) {
-              total7d += qty;
-          }
+          if (tDate >= d7 && tDate <= today) total7d += qty;
       });
 
       const dailyValues = Object.values(dailyUsageMap);
@@ -301,8 +302,7 @@ export default function PlanningPage() {
           stdDev = Math.sqrt(variance);
       }
 
-      let trend = 'STABLE';
-      let trendPercent = 0;
+      let trend = 'STABLE'; let trendPercent = 0;
       if (avgBase > 0) {
           trendPercent = ((avg7 - avgBase) / avgBase) * 100;
           if (trendPercent >= 20) trend = 'UP';
@@ -312,9 +312,53 @@ export default function PlanningPage() {
       }
 
       let baseDemand = avgBase;
-      if (forecastStrategy === 'TREND') baseDemand = avg7 > avgBase ? avg7 : avgBase;
-      if (forecastStrategy === 'PEAK') baseDemand = maxDaily > 0 ? maxDaily : avgBase;
-      if (forecastStrategy === 'ARIMA') baseDemand = avgBase + (1.28 * stdDev); 
+      let hwForecast: number[] = [];
+      let hwAvgDemand = avgBase;
+
+      // 🟢 Holt-Winters Algorithm (Additive Seasonality)
+      if (forecastStrategy === 'HOLT_WINTERS') {
+          const y = dailyValues;
+          const N = y.length;
+          const L = 7; // คาบฤดูกาลรายสัปดาห์ (Weekly Seasonality = 7 Days)
+          
+          // ต้องมีข้อมูลอย่างน้อย 2 รอบฤดูกาล (14 วัน) ถึงจะพยากรณ์ Holt-Winters ได้
+          if (N >= 14) {
+              const alpha = 0.3, beta = 0.1, gamma = 0.2; // พารามิเตอร์น้ำหนักความสำคัญ
+              let l = y.slice(0, L).reduce((a,b)=>a+b,0)/L;
+              let b = 0;
+              for(let i=0; i<L; i++) b += (y[i+L] - y[i])/L;
+              b /= L;
+              let s = [];
+              for(let i=0; i<L; i++) s[i] = y[i] - l;
+
+              for(let t=L; t<N; t++) {
+                  let last_l = l;
+                  l = alpha * (y[t] - s[t%L]) + (1-alpha)*(last_l + b);
+                  b = beta * (l - last_l) + (1-beta)*b;
+                  s[t%L] = gamma * (y[t] - l) + (1-gamma)*s[t%L];
+              }
+
+              let sumHw = 0;
+              for(let k=1; k<=60; k++) { // คาดการณ์ล่วงหน้า 60 วัน
+                  let forecast = l + k*b + s[(N-1 + k)%L];
+                  forecast = Math.max(0, forecast); // ไม่ยอมให้ยอดติดลบ
+                  hwForecast.push(forecast);
+                  if(k<=7) sumHw += forecast;
+              }
+              hwAvgDemand = sumHw / 7;
+              baseDemand = hwAvgDemand;
+          } else {
+              // ถ้าข้อมูลไม่พอ ให้ถอยกลับมาใช้ค่าเฉลี่ยปกติ
+              baseDemand = avgBase;
+              hwForecast = Array(60).fill(avgBase);
+          }
+      } else if (forecastStrategy === 'TREND') {
+          baseDemand = avg7 > avgBase ? avg7 : avgBase;
+      } else if (forecastStrategy === 'PEAK') {
+          baseDemand = maxDaily > 0 ? maxDaily : avgBase;
+      } else if (forecastStrategy === 'ARIMA') {
+          baseDemand = avgBase + (1.28 * stdDev); 
+      }
 
       let appliedDemand = baseDemand * demandFactor;
       const hasDataInPeriod = totalBasePeriod > 0;
@@ -328,29 +372,61 @@ export default function PlanningPage() {
       });
 
       const daysUntilStart = Math.floor((planStart.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-      if (daysUntilStart > 0) runningStock -= (appliedDemand * daysUntilStart);
+      if (daysUntilStart > 0) {
+          if (forecastStrategy === 'HOLT_WINTERS') {
+              for (let k=0; k<daysUntilStart; k++) {
+                  let currentDayDemand = (hwForecast[k] || hwAvgDemand) * demandFactor;
+                  runningStock -= currentDayDemand;
+              }
+          } else {
+              runningStock -= (appliedDemand * daysUntilStart);
+          }
+          if (runningStock < 0) runningStock = 0; 
+      }
 
       const timeline = [];
       for (let i = 0; i < daysInMonth; i++) {
           const bucketDate = new Date(planStart);
           bucketDate.setDate(bucketDate.getDate() + i);
           const bucketDateStr = bucketDate.toISOString().split('T')[0];
+
+          let daysFromToday = Math.floor((bucketDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+          
+          let currentDayDemand = appliedDemand;
+          if (forecastStrategy === 'HOLT_WINTERS') {
+              if (daysFromToday >= 0 && daysFromToday < hwForecast.length) {
+                  currentDayDemand = hwForecast[daysFromToday] * demandFactor;
+              } else if (daysFromToday >= 0) {
+                  currentDayDemand = hwAvgDemand * demandFactor;
+              } else {
+                  currentDayDemand = 0; // อดีตไม่ต้องหักลบซ้ำ
+              }
+          }
           
           let bucketIncomingPO = incomingMap[bucketDateStr] || 0;
           let plannedBase = manualPlanMap[bucketDateStr]?.baseQty || 0;
           let plannedPurchase = manualPlanMap[bucketDateStr]?.purchaseQty || 0;
 
-          runningStock = runningStock - appliedDemand + bucketIncomingPO + plannedBase;
+          let calculatedStock = runningStock - currentDayDemand + bucketIncomingPO + plannedBase;
+          let isShortage = false;
+
+          if (calculatedStock < 0) {
+              calculatedStock = 0;
+              isShortage = true; 
+          }
+
+          runningStock = calculatedStock; 
 
           timeline.push({
               dateObj: bucketDate,
               dateStr: bucketDateStr,
               label: bucketDate.toLocaleDateString('en-GB', {day:'2-digit', month:'short'}),
-              demand: appliedDemand,
+              demand: currentDayDemand,
               incomingPO: bucketIncomingPO,
               plannedBase,
               plannedPurchase,
-              projectedStock: runningStock
+              projectedStock: calculatedStock,
+              isShortage: isShortage
           });
       }
 
@@ -394,12 +470,63 @@ export default function PlanningPage() {
       setLoading(true);
       try {
           const existingPlan = plannedOrders.find(p => p.product_id === cellModal.product.product_id && p.plan_date === cellModal.dateStr);
-          if (existingPlan) {
-              await supabase.from('planning_orders').delete().eq('id', existingPlan.id);
-          }
+          if (existingPlan) await supabase.from('planning_orders').delete().eq('id', existingPlan.id);
           setCellModal(null);
           fetchData();
       } catch (error: any) { alert("Delete Error: " + error.message); }
+      setLoading(false);
+  };
+
+  const handleAutoPlan = async () => {
+      if (isViewer) return alert("ไม่มีสิทธิ์ทำรายการ");
+      if (!window.confirm(`✨ ระบบจะคำนวณและเติมแผนสั่งซื้อให้อัตโนมัติ (เฉพาะห้อง ${activeRoom.label} ในสัปดาห์ที่เลือก)\n\nระบบจะสั่งของใน "วันแรก" ที่คาดการณ์ว่าสต๊อกจะต่ำกว่าจุดสั่งซื้อ ยืนยันหรือไม่?`)) return;
+
+      setLoading(true);
+      try {
+          const newPlans: any[] = [];
+          const targetProducts = products.filter(p => p.planning_room === activeRoom.id && (p.product_name||'').toLowerCase().includes(searchTerm.toLowerCase()));
+
+          targetProducts.forEach(p => {
+              const forecast = getProductForecast(p);
+              let hasPlannedForThisProduct = false;
+
+              timelineHeaders.forEach(head => {
+                  const dayData = forecast.timeline.find(t => t.dateStr === head.dateStr);
+                  if (dayData && !hasPlannedForThisProduct) {
+                      const safetyStockLevel = p.min_stock + (forecast.appliedDemand * p.lead_time);
+                      
+                      if (dayData.projectedStock <= p.min_stock) {
+                          const shortage = safetyStockLevel - dayData.projectedStock;
+                          if (shortage > 0) {
+                              let purchaseQty = Math.ceil(shortage / p.conversion_rate);
+                              if (purchaseQty < p.moq) purchaseQty = p.moq; 
+                              const baseQty = purchaseQty * p.conversion_rate;
+
+                              const existingPlan = plannedOrders.find(plan => plan.product_id === p.product_id && plan.plan_date === dayData.dateStr);
+                              if (!existingPlan) {
+                                  newPlans.push({
+                                      product_id: p.product_id,
+                                      plan_date: dayData.dateStr,
+                                      qty_base: baseQty,
+                                      qty_purchase: purchaseQty
+                                  });
+                              }
+                              hasPlannedForThisProduct = true; 
+                          }
+                      }
+                  }
+              });
+          });
+
+          if (newPlans.length > 0) {
+              await supabase.from('planning_orders').insert(newPlans);
+              alert(`✅ AI วางแผนสั่งซื้ออัตโนมัติสำเร็จ จำนวน ${newPlans.length} รายการ!`);
+              fetchData();
+          } else {
+              alert("ไม่มีสินค้าไหนที่ต้องสั่งเพิ่มในสัปดาห์นี้ครับ (สต๊อกเพียงพอ)");
+          }
+
+      } catch (error: any) { alert("เกิดข้อผิดพลาด: " + error.message); }
       setLoading(false);
   };
 
@@ -427,53 +554,49 @@ export default function PlanningPage() {
               const poNumber = `PO-AUTO-${date.replace(/-/g, '')}-${Math.floor(Math.random() * 1000)}`;
 
               await supabase.from('purchase_orders').insert([{
-                  po_number: poNumber,
-                  warehouse_code: 'MAIN_WH', 
-                  delivery_date: date,
-                  status: 'PENDING'
+                  po_number: poNumber, warehouse_code: 'MAIN_WH', delivery_date: date, status: 'PENDING'
               }]);
 
               const poLinesData = lines.map(line => ({
-                  po_number: poNumber,
-                  product_id: line.product_id,
-                  ordered_qty: line.qty_purchase,
-                  received_qty: 0
+                  po_number: poNumber, product_id: line.product_id, ordered_qty: line.qty_purchase, received_qty: 0
               }));
               await supabase.from('po_lines').insert(poLinesData);
 
               const planIds = lines.map(l => l.id);
               await supabase.from('planning_orders').delete().in('id', planIds);
-
               createdCount++;
           }
 
           alert(`✅ สร้างใบสั่งซื้อ (PO) สำเร็จจำนวน ${createdCount} ใบ!\n(คุณสามารถไปแก้ไข/ระบุคู่ค้าได้ที่ตารางรับเข้า/PO)`);
           fetchData();
-      } catch (error: any) {
-          alert("เกิดข้อผิดพลาดในการสร้าง PO: " + error.message);
-      }
+      } catch (error: any) { alert("เกิดข้อผิดพลาดในการสร้าง PO: " + error.message); }
       setLoading(false);
   };
 
   const handleExportPlan = () => {
-      const exportData: any[] = [];
       const targetProducts = products.filter(p => p.planning_room === activeRoom.id && (p.product_name||'').toLowerCase().includes(searchTerm.toLowerCase()));
 
       if (targetProducts.length === 0) return alert("ไม่มีข้อมูลสำหรับ Export");
 
-      targetProducts.forEach(p => {
+      const allRows = targetProducts.map(p => {
           const forecast = getProductForecast(p);
+          let firstOrderDateStr = '9999-12-31'; 
+          
           const row: any = {
+              '_firstOrderDate': firstOrderDateStr, 
               'ห้อง (Room)': activeRoom.label,
+              'คู่ค้า (Vendor)': p.vendor_name,
               'รหัสสินค้า (SKU)': p.product_id,
               'ชื่อสินค้า (Product)': p.product_name,
               'หมวดหมู่ (Category)': p.category,
-              'คงเหลือปัจจุบัน (Stock)': p.current_qty,
-              'จุดสั่งซื้อ (Min Stock)': p.min_stock,
-              'หน่วยจ่าย (Base UOM)': p.base_uom,
-              'หน่วยสั่งซื้อ (Purchase UOM)': p.purchase_uom,
-              'คาดการณ์ยอดใช้ต่อวัน (Est. Demand)': forecast.appliedDemand.toFixed(2),
-              'Trend (%)': forecast.trendPercent !== 0 ? `${forecast.trendPercent > 0 ? '+' : ''}${forecast.trendPercent.toFixed(1)}%` : '-',
+              'คงเหลือ (Stock)': p.current_qty,
+              'รอรับ (Pending PO)': p.total_pending_po,
+              'ระยะเวลารอ (Lead Time)': `${p.lead_time} วัน`,
+              'จุดสั่ง (Min Stock)': p.min_stock,
+              'ขั้นต่ำการสั่ง (MOQ)': p.moq,
+              'หน่วยจ่าย': p.base_uom,
+              'หน่วยสั่ง': p.purchase_uom,
+              'คาดการณ์ใช้/วัน': forecast.appliedDemand.toFixed(2),
           };
 
           timelineHeaders.forEach(head => {
@@ -481,19 +604,43 @@ export default function PlanningPage() {
               if (dayData) {
                   row[`[Plan] ${head.label}`] = dayData.plannedPurchase > 0 ? `${dayData.plannedPurchase} ${p.purchase_uom}` : '-';
                   row[`[Stock] ${head.label}`] = Math.round(dayData.projectedStock);
+                  
+                  if (dayData.plannedPurchase > 0 && firstOrderDateStr === '9999-12-31') {
+                      row['_firstOrderDate'] = head.dateStr;
+                  }
               }
           });
 
-          exportData.push(row);
+          return row;
       });
 
-      const ws = XLSX.utils.json_to_sheet(exportData);
+      if (exportConfig.sortBy === 'VENDOR') {
+          allRows.sort((a, b) => String(a['คู่ค้า (Vendor)']).localeCompare(String(b['คู่ค้า (Vendor)'])));
+      } else if (exportConfig.sortBy === 'DATE') {
+          allRows.sort((a, b) => a._firstOrderDate.localeCompare(b._firstOrderDate));
+      }
+
+      allRows.forEach(r => delete r._firstOrderDate);
+
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, `Plan_Wk${weekOffset+1}`);
-      XLSX.writeFile(wb, `Replenishment_Plan_${activeRoom.id}_${selectedMonth}_Wk${weekOffset+1}.xlsx`);
+
+      if (exportConfig.splitVendor) {
+          const uniqueVendors = [...new Set(allRows.map(r => r['คู่ค้า (Vendor)']))];
+          uniqueVendors.forEach(v => {
+              const vRows = allRows.filter(r => r['คู่ค้า (Vendor)'] === v);
+              const ws = XLSX.utils.json_to_sheet(vRows);
+              const safeSheetName = String(v).replace(/[\\/?*\[\]:]/g, '_').substring(0, 31) || 'Unknown';
+              XLSX.utils.book_append_sheet(wb, ws, safeSheetName);
+          });
+      } else {
+          const ws = XLSX.utils.json_to_sheet(allRows);
+          XLSX.utils.book_append_sheet(wb, ws, `Plan_Wk${weekOffset+1}`);
+      }
+
+      XLSX.writeFile(wb, `Replenishment_Plan_${activeRoom.id}_Wk${weekOffset+1}.xlsx`);
+      setShowExportModal(false);
   };
 
-  // 🟢 ข้อมูล Dropdown หมวดหมู่ และ โลเคชั่น
   const uniqueLocations = useMemo(() => {
       const locs = new Set(products.map(p => p.default_location).filter(l => l && l !== 'Unassigned'));
       return ['ALL', ...Array.from(locs).sort()];
@@ -545,12 +692,18 @@ export default function PlanningPage() {
           <div className="flex gap-3">
               {activeTab === 'ANALYZE' && (
                   <>
-                      <button onClick={handleExportPlan} className="px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm hover:bg-slate-50 transition-colors">
+                      {!isViewer && (
+                          <button onClick={handleAutoPlan} disabled={loading} className="px-4 py-2 bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-lg text-sm font-black flex items-center gap-2 shadow-md hover:from-amber-500 hover:to-orange-600 transition-all active:scale-95 disabled:opacity-50">
+                              <Sparkles size={16}/> Auto-Plan (AI)
+                          </button>
+                      )}
+
+                      <button onClick={() => setShowExportModal(true)} className="px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm hover:bg-slate-50 transition-colors">
                           <FileSpreadsheet size={16}/> Export Plan
                       </button>
                       
                       {!isViewer && (
-                          <button onClick={handleAutoGeneratePO} className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-lg text-sm font-black flex items-center gap-2 shadow-md hover:from-emerald-600 hover:to-teal-600 transition-all active:scale-95">
+                          <button onClick={handleAutoGeneratePO} disabled={loading} className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-lg text-sm font-black flex items-center gap-2 shadow-md hover:from-emerald-600 hover:to-teal-600 transition-all active:scale-95 disabled:opacity-50">
                               <Wand2 size={16}/> Convert to PO
                           </button>
                       )}
@@ -618,7 +771,6 @@ export default function PlanningPage() {
           )}
       </div>
 
-      {/* ==================== PART 1: MANAGE ITEMS (WITH ADVANCED FILTERS) ==================== */}
       {activeTab === 'MANAGE' && !isViewer && (
           <div className="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
               <div className="p-4 border-b bg-slate-50 flex justify-between items-center flex-wrap gap-4">
@@ -628,7 +780,6 @@ export default function PlanningPage() {
                           <input type="text" placeholder="ค้นหา: ชื่อสินค้า, รหัสสินค้า..." className="w-full pl-9 p-2.5 bg-white border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm" value={manageSearch} onChange={e => setManageSearch(e.target.value)}/>
                       </div>
                       
-                      {/* 🟢 Dropdown กรอง Category */}
                       <div className="flex items-center gap-2 bg-white px-3 py-2.5 rounded-xl border border-slate-300 shadow-sm">
                           <Package size={16} className="text-slate-400"/>
                           <select className="bg-transparent text-sm font-bold text-slate-600 outline-none cursor-pointer w-32" value={manageCategory} onChange={e => setManageCategory(e.target.value)}>
@@ -637,7 +788,6 @@ export default function PlanningPage() {
                           </select>
                       </div>
                       
-                      {/* 🟢 Dropdown กรอง Location */}
                       <div className="flex items-center gap-2 bg-white px-3 py-2.5 rounded-xl border border-slate-300 shadow-sm">
                           <MapPin size={16} className="text-slate-400"/>
                           <select className="bg-transparent text-sm font-bold text-slate-600 outline-none cursor-pointer w-32" value={manageLocation} onChange={e => setManageLocation(e.target.value)}>
@@ -744,11 +894,13 @@ export default function PlanningPage() {
 
                       <div className="flex items-center gap-2 bg-purple-50 px-3 py-1.5 rounded-xl border border-purple-200 shadow-sm">
                           <BrainCircuit size={16} className="text-purple-600"/>
+                          {/* 🟢 มีเมนูย่อย Holt-Winters ให้เลือกแล้ว */}
                           <select value={forecastStrategy} onChange={(e) => setForecastStrategy(e.target.value as any)} className="bg-transparent text-sm font-bold text-purple-900 outline-none cursor-pointer border-r border-purple-200 pr-2">
                               <option value="MA">Basic Avg (ค่าเฉลี่ยปกติ)</option>
                               <option value="TREND">Trend Mode (เน้นยอดล่าสุด)</option>
                               <option value="PEAK">Peak Mode (กันของขาด)</option>
                               <option value="ARIMA">Auto-ARIMA (วิเคราะห์ความผันผวน)</option>
+                              <option value="HOLT_WINTERS">Holt-Winters (ตามฤดูกาล)</option>
                           </select>
                           
                           <select value={demandFactor} onChange={(e) => setDemandFactor(Number(e.target.value))} className="bg-transparent text-sm font-bold text-purple-700 outline-none cursor-pointer ml-1">
@@ -783,7 +935,7 @@ export default function PlanningPage() {
                               <th className="p-3 pl-6 sticky left-0 bg-slate-100 z-40 border-r border-slate-200 w-80 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">Product Info</th>
                               <th className="p-3 text-center w-28 bg-white border-r border-slate-200">
                                   <div className="flex flex-col items-center">
-                                      <span>{forecastStrategy === 'PEAK' ? 'Max/Day' : forecastStrategy === 'ARIMA' ? 'Adjusted/Day' : 'Avg/Day'}</span>
+                                      <span>{forecastStrategy === 'PEAK' ? 'Max/Day' : forecastStrategy === 'ARIMA' ? 'Adjusted/Day' : forecastStrategy === 'HOLT_WINTERS' ? 'HW Avg/Day' : 'Avg/Day'}</span>
                                       <span className="text-[9px] text-slate-400 font-medium tracking-widest mt-0.5">({baseAvgPeriod} Days)</span>
                                   </div>
                               </th>
@@ -805,26 +957,26 @@ export default function PlanningPage() {
                                       <tr key={p.product_id} className="hover:bg-slate-50 transition-colors group">
                                           <td className="p-3 pl-6 sticky left-0 bg-white group-hover:bg-slate-50 z-20 border-r border-slate-100 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
                                               <div className="font-bold text-slate-800 text-sm truncate max-w-[280px]" title={p.product_name}>{p.product_name}</div>
+                                              
+                                              <div className="text-[10px] font-bold text-slate-500 mt-1 flex items-center gap-1">
+                                                  <Users size={12} className="text-indigo-400"/> {p.vendor_name}
+                                              </div>
+
+                                              {p.total_pending_po > 0 && (
+                                                  <div className="text-[10px] font-bold text-teal-600 flex items-center gap-1 mt-0.5">
+                                                      <Truck size={12}/> กำลังมาส่ง (Pending PO): {p.total_pending_po} {p.base_uom}
+                                                  </div>
+                                              )}
+
                                               <div className="flex items-center justify-between mt-1.5">
                                                   <div className="flex items-center gap-2">
                                                       <span className="text-[10px] text-slate-500 font-mono bg-slate-100 px-1.5 py-0.5 rounded">{p.product_id}</span>
-                                                      
-                                                      {forecast.trend === 'UP' && (
-                                                          <span className="flex items-center gap-0.5 text-[9px] bg-rose-100 text-rose-600 px-1 py-0.5 rounded font-bold" title={`Trend UP ${forecast.trendPercent.toFixed(0)}%`}>
-                                                              <Flame size={10}/> +{forecast.trendPercent.toFixed(0)}%
-                                                          </span>
-                                                      )}
-                                                      {forecast.trend === 'DOWN' && (
-                                                          <span className="flex items-center gap-0.5 text-[9px] bg-blue-100 text-blue-600 px-1 py-0.5 rounded font-bold" title={`Trend DOWN ${forecast.trendPercent.toFixed(0)}%`}>
-                                                              <TrendingDown size={10}/> {forecast.trendPercent.toFixed(0)}%
-                                                          </span>
-                                                      )}
                                                   </div>
                                                   
                                                   <div className="flex items-center gap-2">
-                                                      <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100 flex items-center gap-1" title="Min Stock (จุดสั่งซื้อ)">
-                                                          Min: {p.min_stock}
-                                                          {!isViewer && <button onClick={() => setEditingProduct(p)} className="hover:text-rose-800 ml-1"><Settings size={10}/></button>}
+                                                      <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100 flex items-center gap-1 cursor-pointer hover:bg-rose-100 transition-colors" title="แก้ไขการตั้งค่าจัดซื้อ" onClick={() => !isViewer && setEditingProduct(p)}>
+                                                          Min: {p.min_stock} | LT: {p.lead_time}
+                                                          {!isViewer && <Settings size={10} className="ml-0.5"/>}
                                                       </span>
                                                       <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100" title={`สั่งเป็น ${p.purchase_uom} / จ่ายเป็น ${p.base_uom}`}>
                                                           {p.purchase_uom} (={p.conversion_rate})
@@ -850,8 +1002,9 @@ export default function PlanningPage() {
                                               const dayData = forecast.timeline.find(t => t.dateStr === head.dateStr);
                                               if (!dayData) return <td key={idx} className="border-r border-slate-100"></td>;
 
-                                              const isLow = dayData.projectedStock <= p.min_stock;
-                                              const isNegative = dayData.projectedStock < 0;
+                                              const safetyStock = p.min_stock + (forecast.appliedDemand * p.lead_time);
+                                              const isWarning = dayData.projectedStock <= safetyStock;
+                                              const isCritical = dayData.projectedStock === 0 || dayData.isShortage; 
 
                                               return (
                                                   <td 
@@ -861,7 +1014,7 @@ export default function PlanningPage() {
                                                           setCellModal({ product: p, ...dayData });
                                                           setLiveConversion(dayData.plannedPurchase);
                                                       }}
-                                                      className={`relative p-2 border-r border-slate-100 h-[70px] min-w-[120px] transition-colors ${!isViewer ? 'cursor-pointer hover:ring-2 hover:ring-inset hover:ring-indigo-400' : ''} ${isNegative ? 'bg-rose-50/50' : isLow ? 'bg-amber-50/30' : 'bg-white'}`}
+                                                      className={`relative p-2 border-r border-slate-100 h-[70px] min-w-[120px] transition-colors ${!isViewer ? 'cursor-pointer hover:ring-2 hover:ring-inset hover:ring-indigo-400' : ''} ${isCritical ? 'bg-rose-50/50' : isWarning ? 'bg-amber-50/30' : 'bg-white'}`}
                                                   >
                                                       {(dayData.plannedPurchase > 0 || dayData.incomingPO > 0) && (
                                                           <div className="absolute top-1 right-1 flex flex-col items-end gap-1">
@@ -871,7 +1024,7 @@ export default function PlanningPage() {
                                                       )}
                                                       
                                                       <div className="flex items-center justify-center h-full">
-                                                          <div className={`font-black text-xl ${isNegative ? 'text-rose-600' : 'text-slate-800'} ${isLow && !isNegative ? 'text-amber-600' : ''}`}>
+                                                          <div className={`font-black text-xl ${isCritical ? 'text-rose-600' : 'text-slate-800'} ${isWarning && !isCritical ? 'text-amber-600' : ''}`}>
                                                               {Math.round(dayData.projectedStock)}
                                                           </div>
                                                       </div>
@@ -894,6 +1047,47 @@ export default function PlanningPage() {
                           {!isViewer && <button onClick={()=>setActiveTab('MANAGE')} className="text-indigo-500 hover:underline mt-2 font-bold flex items-center gap-1">ไปที่หน้า Manage Rooms <ArrowRight size={14}/></button>}
                       </div>
                   )}
+              </div>
+          </div>
+      )}
+
+      {/* 🟢 EXPORT OPTIONS MODAL */}
+      {showExportModal && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
+                  <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                      <h3 className="font-bold text-slate-800 flex items-center gap-2"><Download size={18} className="text-indigo-600"/> ตัวเลือกการดาวน์โหลด (Export)</h3>
+                      <button onClick={() => setShowExportModal(false)} className="p-2 text-slate-400 hover:text-rose-500 rounded-full hover:bg-white transition-colors"><X size={18}/></button>
+                  </div>
+                  <div className="p-6 space-y-5">
+                      <div>
+                          <label className="text-xs font-bold text-slate-500 uppercase block mb-3">รูปแบบหน้ากระดาษ (Sheet)</label>
+                          <div className="flex gap-3">
+                              <label className="flex-1 cursor-pointer border border-slate-200 rounded-xl p-3 flex flex-col items-center gap-2 hover:border-indigo-400 transition-colors">
+                                  <input type="radio" name="split" checked={exportConfig.splitVendor} onChange={() => setExportConfig({...exportConfig, splitVendor: true})} className="accent-indigo-600"/>
+                                  <span className="text-xs font-bold text-slate-700">แยก Sheet ตามชื่อคู่ค้า (Vendor)</span>
+                              </label>
+                              <label className="flex-1 cursor-pointer border border-slate-200 rounded-xl p-3 flex flex-col items-center gap-2 hover:border-indigo-400 transition-colors">
+                                  <input type="radio" name="split" checked={!exportConfig.splitVendor} onChange={() => setExportConfig({...exportConfig, splitVendor: false})} className="accent-indigo-600"/>
+                                  <span className="text-xs font-bold text-slate-700">รวมไว้ใน Sheet เดียว (All in one)</span>
+                              </label>
+                          </div>
+                      </div>
+
+                      <div>
+                          <label className="text-xs font-bold text-slate-500 uppercase block mb-3">การจัดเรียงข้อมูล (Sort By)</label>
+                          <select value={exportConfig.sortBy} onChange={(e) => setExportConfig({...exportConfig, sortBy: e.target.value})} className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500">
+                              <option value="VENDOR">เรียงตามชื่อคู่ค้า (Supplier Name)</option>
+                              <option value="DATE">เรียงตามวันของเข้า (Delivery Date)</option>
+                          </select>
+                      </div>
+                  </div>
+                  <div className="p-4 border-t border-slate-100 flex gap-3 bg-slate-50">
+                      <button onClick={() => setShowExportModal(false)} className="flex-1 py-2.5 bg-slate-200 text-slate-600 rounded-xl font-bold hover:bg-slate-300 transition-colors">ยกเลิก</button>
+                      <button onClick={handleExportPlan} className="flex-[2] py-2.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 flex items-center justify-center gap-2 transition-all">
+                          <FileSpreadsheet size={16}/> ดาวน์โหลด Excel
+                      </button>
+                  </div>
               </div>
           </div>
       )}
@@ -956,33 +1150,39 @@ export default function PlanningPage() {
               <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
                   <div className="p-5 border-b border-rose-100 flex justify-between items-start bg-rose-50 relative overflow-hidden">
                       <div className="relative z-10">
-                          <h3 className="font-bold text-rose-800 flex items-center gap-2"><Settings size={18}/> ตั้งค่าจุดสั่งซื้อ (Min Stock)</h3>
+                          <h3 className="font-bold text-rose-800 flex items-center gap-2"><Settings size={18}/> ตั้งค่าพารามิเตอร์สั่งซื้อ</h3>
                           <p className="text-xs text-rose-600 mt-1">{editingProduct.product_name}</p>
                       </div>
                       <button onClick={() => setEditingProduct(null)} className="p-2 bg-white/50 rounded-full hover:bg-white text-rose-500 relative z-10"><X size={18}/></button>
                   </div>
                   
                   <form onSubmit={handleSaveMasterData} className="p-6">
-                      <div className="bg-amber-50 border border-amber-200 text-amber-700 text-xs p-3 rounded-xl mb-4 flex gap-2 items-start">
+                      <div className="bg-amber-50 border border-amber-200 text-amber-700 text-[10px] p-3 rounded-xl mb-4 flex gap-2 items-start font-bold">
                           <AlertTriangle size={14} className="shrink-0 mt-0.5"/>
-                          <span>การแก้ไขนี้จะมีผลกับ <b>ทุกระบบ (ทั้งหน้า Inventory, Dashboard และแจ้งเตือน)</b></span>
+                          <span>การตั้งค่า <b>Min Stock</b> และ <b>Lead Time (ระยะเวลารอของ)</b> จะทำให้ AI คาดการณ์การสั่งของได้แม่นยำขึ้น</span>
                       </div>
 
-                      <div className="mb-6">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2 text-center">
-                              ป้อนจำนวน Min Stock ใหม่ (หน่วย: {editingProduct.base_uom})
-                          </label>
-                          <input 
-                              type="number" min="0" name="min_stock" 
-                              defaultValue={editingProduct.min_stock}
-                              className="w-full text-center text-5xl font-black text-rose-600 border-b-2 border-slate-200 focus:border-rose-500 outline-none pb-2 transition-colors bg-transparent"
-                              autoFocus required
-                          />
+                      <div className="flex gap-4 mb-6">
+                          <div className="flex-1">
+                              <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Min Stock</label>
+                              <div className="flex items-center bg-slate-50 border border-slate-300 rounded-xl overflow-hidden focus-within:border-rose-500 focus-within:ring-1 focus-within:ring-rose-500">
+                                  <input type="number" min="0" name="min_stock" defaultValue={editingProduct.min_stock} className="w-full p-3 text-lg font-black text-rose-600 outline-none bg-transparent" required />
+                                  <span className="text-[10px] font-bold text-slate-400 pr-3">{editingProduct.base_uom}</span>
+                              </div>
+                          </div>
+                          
+                          <div className="flex-1">
+                              <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Lead Time</label>
+                              <div className="flex items-center bg-slate-50 border border-slate-300 rounded-xl overflow-hidden focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500">
+                                  <input type="number" min="0" name="lead_time" defaultValue={editingProduct.lead_time} className="w-full p-3 text-lg font-black text-indigo-600 outline-none bg-transparent" required />
+                                  <span className="text-[10px] font-bold text-slate-400 pr-3">วัน</span>
+                              </div>
+                          </div>
                       </div>
 
                       <div className="flex gap-3">
                           <button type="button" onClick={() => setEditingProduct(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors shadow-sm">Cancel</button>
-                          <button type="submit" disabled={loading} className="flex-1 py-3 bg-rose-600 text-white rounded-xl font-bold shadow-lg shadow-rose-200 hover:bg-rose-700 flex justify-center items-center gap-2 transition-all">
+                          <button type="submit" disabled={loading} className="flex-[2] py-3 bg-rose-600 text-white rounded-xl font-bold shadow-lg shadow-rose-200 hover:bg-rose-700 flex justify-center items-center gap-2 transition-all">
                               {loading ? 'Saving...' : <><Save size={18}/> Update System</>}
                           </button>
                       </div>

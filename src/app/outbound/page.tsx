@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabaseClient';
-import { ShoppingCart, Search, Plus, MapPin, Trash2, CheckCircle, UploadCloud, Store, FileText, AlertCircle, ScanBarcode, X, ChevronDown, ChevronUp, ShieldAlert, Camera, Layers } from 'lucide-react';
+import { ShoppingCart, Search, Plus, MapPin, Trash2, CheckCircle, UploadCloud, Store, FileText, AlertCircle, ScanBarcode, X, ChevronDown, ChevronUp, ShieldAlert, Camera, Layers, Filter } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface FormDataState {
@@ -65,6 +65,9 @@ export default function Outbound() {
   const [bulkOrders, setBulkOrders] = useState<ParsedOrder[]>([]);
   const [uploadStats, setUploadStats] = useState<{total: number, dupes: number}>({ total: 0, dupes: 0 });
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
+
+  // 🟢 State สำหรับปุ่มกรองเฉพาะรายการที่มีปัญหา
+  const [showOnlyErrors, setShowOnlyErrors] = useState<boolean>(false);
 
   const [inventory, setInventory] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
@@ -310,9 +313,7 @@ export default function Outbound() {
 
           const readFilePromises = Array.from(files).map(file => {
               return new Promise<void>((resolve, reject) => {
-                  
                   const dateFromFilename = extractDateFromFilename(file.name);
-
                   const reader = new FileReader();
                   reader.onload = async (evt: any) => {
                       try {
@@ -322,7 +323,6 @@ export default function Outbound() {
                           const rows = XLSX.utils.sheet_to_json<any>(sheet, { header: 1, defval: "" }); 
 
                           let currentHeader: ParsedOrder | null = null;
-
                           const { data: lotData } = await supabase.from('inventory_lots').select('product_id, quantity');
                           
                           const stockMap: Record<string, number> = {};
@@ -365,7 +365,6 @@ export default function Outbound() {
                                   if (qty > 0) {
                                       const stockItem = inventory.find(inv => inv.product_id === col0);
                                       const currentStock = stockItem ? stockItem.current_qty : 0;
-                                      
                                       const unitCost = parseFloat(row[4]) || 0;
                                       const costAmt = parseFloat(row[6]) || (qty * unitCost) || 0;
                                       
@@ -393,9 +392,7 @@ export default function Outbound() {
                               }
                           }
                           resolve();
-                      } catch (err) {
-                          reject(err);
-                      }
+                      } catch (err) { reject(err); }
                   };
                   reader.readAsArrayBuffer(file);
               });
@@ -412,15 +409,34 @@ export default function Outbound() {
               Object.values(allParsedOrders).forEach(order => { if (duplicateSet.has(order.to_number)) order.isDuplicate = true; });
           }
 
-          setBulkOrders(Object.values(allParsedOrders));
+          // 🟢 1. Sort บิลที่มีปัญหาขึ้นมาอยู่ด้านบนสุดเสมอ
+          const finalOrders = Object.values(allParsedOrders);
+          finalOrders.sort((a, b) => {
+              const aHasIssue = a.items.some(i => i.hasError || i.uom_mismatch);
+              const bHasIssue = b.items.some(i => i.hasError || i.uom_mismatch);
+              
+              if (aHasIssue && !bHasIssue) return -1;
+              if (!aHasIssue && bHasIssue) return 1;
+              
+              if (a.isDuplicate && !b.isDuplicate) return 1;
+              if (!a.isDuplicate && b.isDuplicate) return -1;
+              return 0;
+          });
+
+          setBulkOrders(finalOrders);
           
+          // 🟢 สั่งเปิด Accordion อัตโนมัติสำหรับบิลที่มีปัญหา หรือ 3 บิลแรก
           const initialExpanded: Record<number, boolean> = {};
-          Object.values(allParsedOrders).forEach((_, idx) => { if(idx < 3) initialExpanded[idx] = true; });
+          finalOrders.forEach((o, idx) => { 
+              if(o.items.some(i => i.hasError || i.uom_mismatch) || idx < 3) {
+                  initialExpanded[idx] = true; 
+              }
+          });
           setExpandedOrders(initialExpanded);
 
           setUploadStats({
-              total: Object.values(allParsedOrders).length,
-              dupes: Object.values(allParsedOrders).filter(o => o.isDuplicate).length
+              total: finalOrders.length,
+              dupes: finalOrders.filter(o => o.isDuplicate).length
           });
 
       } catch (error: any) { alert("เกิดข้อผิดพลาดในการอ่านไฟล์: " + error.message); }
@@ -428,18 +444,30 @@ export default function Outbound() {
       e.target.value = ''; 
   };
 
-  const handleResolveUom = (orderIndex: number, itemIndex: number, newQty: number) => {
-      if (newQty <= 0) return alert("กรุณาใส่จำนวนที่มากกว่า 0");
-
+  // 🟢 2. ฟังก์ชันแก้ไขตัวเลข Inline ของบรรทัดทั่วไป (พิมพ์ปุ๊บคำนวณปั๊บ)
+  const handleUpdateItemQty = (orderIndex: number, itemIndex: number, newQty: number) => {
       const updated = [...bulkOrders];
       const item = updated[orderIndex].items[itemIndex];
       
       item.qty = newQty;
-      item.unit = item.expected_uom || 'Unit';
-      item.uom_mismatch = false;
       item.cost_amt = newQty * (item.unit_cost || 0);
       
-      item.hasError = (item.inStock || 0) < newQty; 
+      // ประเมิน Error ใหม่จากยอดสต๊อก (ถ้าจำนวนใหม่เกินสต๊อก ก็ยังให้แดงอยู่)
+      item.hasError = (item.inStock || 0) < newQty || item.uom_mismatch;
+
+      setBulkOrders(updated);
+  };
+
+  // 🟢 ฟังก์ชันสำหรับกดยืนยัน UOM Mismatch
+  const handleResolveUom = (orderIndex: number, itemIndex: number) => {
+      const updated = [...bulkOrders];
+      const item = updated[orderIndex].items[itemIndex];
+      
+      if (item.qty <= 0) return alert("กรุณาใส่จำนวนที่มากกว่า 0");
+
+      item.unit = item.expected_uom || 'Unit';
+      item.uom_mismatch = false;
+      item.hasError = (item.inStock || 0) < item.qty; // ปลดล็อคแดงเรื่องหน่วย แล้วไปเช็คเรื่องสต๊อกแทน
 
       setBulkOrders(updated);
   };
@@ -732,7 +760,6 @@ export default function Outbound() {
                         </label>
                     </div>
 
-                    {/* 🟢 แจ้งเตือน UOM Mismatch */}
                     {hasUomMismatchOverall && (
                         <div className="mb-6 bg-rose-50 border border-rose-400 p-4 rounded-2xl flex items-start gap-3 shadow-sm animate-pulse">
                             <ShieldAlert size={24} className="text-rose-600 shrink-0"/>
@@ -746,7 +773,16 @@ export default function Outbound() {
                     {bulkOrders.length > 0 && (
                         <div className="flex-1 overflow-auto bg-white rounded-xl shadow border flex flex-col min-w-0">
                             <div className="p-4 bg-slate-50 border-b flex flex-col md:flex-row justify-between items-center shrink-0 gap-4">
-                                <div className="font-bold text-slate-700">พบ {uploadStats.total} เอกสาร (ซ้ำ {uploadStats.dupes} ใบ)</div>
+                                <div className="flex flex-col md:flex-row items-center gap-3">
+                                    <div className="font-bold text-slate-700">พบ {uploadStats.total} เอกสาร (ซ้ำ {uploadStats.dupes} ใบ)</div>
+                                    {/* 🟢 3. ปุ่มสำหรับกด Filter โชว์เฉพาะบิลที่มีปัญหา */}
+                                    <button 
+                                        onClick={() => setShowOnlyErrors(!showOnlyErrors)}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border flex items-center gap-1.5 transition-colors ${showOnlyErrors ? 'bg-orange-100 text-orange-700 border-orange-300 shadow-inner' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50 shadow-sm'}`}
+                                    >
+                                        <Filter size={14}/> {showOnlyErrors ? 'แสดงทั้งหมด' : '🔍 กรองเฉพาะรายการที่มีปัญหา'}
+                                    </button>
+                                </div>
                                 <button 
                                     onClick={handleSubmitBulk} 
                                     disabled={validOrdersToProcess.length === 0 || loading || hasUomMismatchOverall} 
@@ -759,8 +795,12 @@ export default function Outbound() {
                             <div className="p-4 space-y-4 flex-1 overflow-y-auto min-w-0">
                                 {needsForceIssue && !hasUomMismatchOverall && <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg text-orange-700 text-sm font-bold flex items-center gap-2"><AlertCircle size={16}/> มีเอกสารที่สต๊อกไม่พอจ่าย คุณสามารถกดนำเข้าได้ แต่ระบบจะถามเหตุผลการบังคับตัด</div>}
                                 
-                                {bulkOrders.map((order, oIndex) => (
-                                    <div key={order.to_number} className={`border rounded-lg overflow-hidden ${order.isDuplicate ? 'border-red-400' : order.items.some(i => i.hasError || i.uom_mismatch) ? 'border-orange-400' : 'border-slate-200'}`}>
+                                {bulkOrders.map((order, oIndex) => {
+                                    // 🟢 ระบบกรอง หากเปิดโหมดกรอง แล้วบิลนั้นๆ ไม่มีปัญหาเลย ให้ข้ามการวาดบิลนั้นไปเลย
+                                    if (showOnlyErrors && !order.items.some(i => i.hasError || i.uom_mismatch)) return null;
+
+                                    return (
+                                    <div key={order.to_number} className={`border rounded-lg overflow-hidden ${order.isDuplicate ? 'border-red-400' : order.items.some(i => i.hasError || i.uom_mismatch) ? 'border-orange-400 shadow-md ring-2 ring-orange-100' : 'border-slate-200'}`}>
                                         <div onClick={() => toggleOrderExpand(oIndex)} className={`p-4 flex flex-col md:flex-row justify-between md:items-center cursor-pointer gap-2 ${order.isDuplicate ? 'bg-red-100/50' : order.items.some(i => i.hasError || i.uom_mismatch) ? 'bg-orange-50' : 'bg-slate-50 hover:bg-slate-100'}`}>
                                             <div className="flex items-center gap-4">
                                                 <button className="text-slate-400 hover:text-slate-700">
@@ -793,54 +833,54 @@ export default function Outbound() {
                                                             <th className="p-2 pl-4">RM Code</th>
                                                             <th className="p-2 min-w-[150px]">Description</th>
                                                             <th className="p-2 text-center bg-slate-100">มีสต๊อก</th>
-                                                            <th className="p-2 text-center">จ่าย</th>
+                                                            <th className="p-2 text-center border-x border-slate-200 bg-blue-50/30">ยอดจ่าย (ปรับแก้ได้)</th>
                                                             <th className="p-2 text-right">Cost Amt.</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody className="divide-y">
                                                         {order.items.map((item, idx) => (
-                                                            <tr key={idx} className={!order.isDuplicate && (item.hasError || item.uom_mismatch) ? 'bg-orange-50/30' : ''}>
+                                                            <tr key={idx} className={!order.isDuplicate && (item.hasError || item.uom_mismatch) ? 'bg-orange-50/50' : 'hover:bg-slate-50 transition-colors'}>
                                                                 <td className="p-2 pl-4 font-bold">{item.rm_code}</td>
                                                                 <td className="p-2 text-xs text-slate-600 truncate max-w-[200px]" title={item.description}>{item.description}</td>
-                                                                <td className="p-2 text-center bg-slate-50 text-xs font-mono text-blue-600">{item.inStock?.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                                                <td className="p-2 text-center bg-slate-50 text-xs font-mono text-blue-600 border-x border-slate-100">{item.inStock?.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                                                 
-                                                                {/* 🟢 Inline UOM Edit */}
-                                                                <td className="p-2 text-center">
-                                                                    {item.uom_mismatch && !order.isDuplicate ? (
-                                                                        <div className="flex flex-col items-center bg-rose-50 p-1.5 rounded-lg border border-rose-200 shadow-inner w-max mx-auto">
-                                                                            <span className="text-[10px] font-black text-rose-600 mb-1 flex items-center gap-1">
-                                                                                <AlertCircle size={12}/> {item.unit} ➡️ {item.expected_uom}
+                                                                {/* 🟢 2. ให้กล่องจำนวนเป็น Input ที่สามารถแก้ไขได้ทั้งหมด */}
+                                                                <td className="p-2 text-center border-r border-slate-200">
+                                                                    <div className="flex flex-col items-center justify-center">
+                                                                        {item.uom_mismatch && !order.isDuplicate && (
+                                                                            <span className="text-[10px] font-black text-rose-600 mb-1.5 flex items-center gap-1 bg-rose-100 px-2 py-0.5 rounded shadow-sm border border-rose-200">
+                                                                                <AlertCircle size={12}/> โดนเปลี่ยนหน่วยนับ! ({item.unit} ➡️ {item.expected_uom})
                                                                             </span>
-                                                                            <div className="flex items-center gap-1">
-                                                                                <input 
-                                                                                    type="number" step="0.01"
-                                                                                    id={`fix-qty-${oIndex}-${idx}`}
-                                                                                    defaultValue={item.qty} 
-                                                                                    className="w-16 p-1 text-xs font-bold text-center border border-rose-300 rounded outline-none focus:ring-2 focus:ring-rose-500 bg-white"
-                                                                                    title="กรุณาแปลงหน่วยเป็นจำนวนตามระบบ"
-                                                                                    onClick={(e) => e.stopPropagation()}
-                                                                                />
+                                                                        )}
+                                                                        <div className="flex items-center gap-1 justify-center">
+                                                                            <input 
+                                                                                type="number" step="0.01"
+                                                                                value={item.qty === 0 ? '' : item.qty}
+                                                                                onChange={(e) => handleUpdateItemQty(oIndex, idx, Number(e.target.value))}
+                                                                                className={`w-20 p-1.5 text-sm font-black text-center border rounded-lg outline-none focus:ring-2 transition-all shadow-inner ${item.uom_mismatch ? 'border-rose-400 bg-white focus:ring-rose-500 text-rose-700' : item.hasError ? 'border-orange-400 bg-white focus:ring-orange-500 text-orange-700' : 'border-slate-300 bg-white focus:ring-blue-500 text-slate-700'}`}
+                                                                                disabled={order.isDuplicate}
+                                                                                onClick={(e) => e.stopPropagation()}
+                                                                            />
+                                                                            
+                                                                            {item.uom_mismatch && !order.isDuplicate ? (
                                                                                 <button 
                                                                                     onClick={(e) => {
                                                                                         e.stopPropagation();
-                                                                                        const input = document.getElementById(`fix-qty-${oIndex}-${idx}`) as HTMLInputElement;
-                                                                                        handleResolveUom(oIndex, idx, Number(input.value));
+                                                                                        handleResolveUom(oIndex, idx);
                                                                                     }}
-                                                                                    className="p-1 bg-rose-500 text-white rounded hover:bg-rose-600 transition-colors shadow-sm"
-                                                                                    title="ยืนยันการแปลงหน่วย"
+                                                                                    className="p-1.5 bg-rose-500 text-white rounded-lg hover:bg-rose-600 transition-colors shadow-md border border-rose-600"
+                                                                                    title="กดเพื่อยืนยันการเปลี่ยนหน่วยนับ"
                                                                                 >
-                                                                                    <CheckCircle size={14}/>
+                                                                                    <CheckCircle size={16}/>
                                                                                 </button>
-                                                                            </div>
+                                                                            ) : (
+                                                                                <span className="text-[10px] text-slate-500 font-bold ml-1 w-8 text-left uppercase tracking-wider">{item.unit}</span>
+                                                                            )}
                                                                         </div>
-                                                                    ) : (
-                                                                        <div className="font-bold">
-                                                                            <span className={!order.isDuplicate && item.hasError ? 'text-orange-600' : 'text-green-600'}>{item.qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</span> <span className="text-[10px] text-slate-400">{item.unit}</span>
-                                                                        </div>
-                                                                    )}
+                                                                    </div>
                                                                 </td>
 
-                                                                <td className="p-2 text-right text-slate-500">{item.cost_amt.toLocaleString()} ฿</td>
+                                                                <td className="p-2 text-right text-slate-500 text-xs font-mono">{item.cost_amt.toLocaleString()} ฿</td>
                                                             </tr>
                                                         ))}
                                                     </tbody>
@@ -848,7 +888,7 @@ export default function Outbound() {
                                             </div>
                                         )}
                                     </div>
-                                ))}
+                                )})}
                             </div>
                         </div>
                     )}
