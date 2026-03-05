@@ -22,6 +22,8 @@ interface ParsedItem {
   cost_amt: number;
   inStock?: number;
   hasError?: boolean;
+  expected_uom?: string; 
+  uom_mismatch?: boolean; 
 }
 
 interface ParsedOrder {
@@ -61,6 +63,7 @@ export default function Outbound() {
     docNo: '', branchId: '', branchName: '', refDoc: '', note: ''
   });
   const [bulkOrders, setBulkOrders] = useState<ParsedOrder[]>([]);
+  const [uploadStats, setUploadStats] = useState<{total: number, dupes: number}>({ total: 0, dupes: 0 });
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
 
   const [inventory, setInventory] = useState<any[]>([]);
@@ -70,7 +73,6 @@ export default function Outbound() {
   const [showBranchDropdown, setShowBranchDropdown] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   
-  // --- Refs & Scanner States ---
   const scannerInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
   const [scanInput, setScanInput] = useState<string>('');
@@ -81,6 +83,8 @@ export default function Outbound() {
   
   const inventoryRef = useRef<any[]>([]);
   useEffect(() => { inventoryRef.current = inventory; }, [inventory]);
+
+  const [expandedOrders, setExpandedOrders] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     setFormData(prev => ({ ...prev, docNo: `TO-MNL-${Date.now()}` }));
@@ -95,7 +99,6 @@ export default function Outbound() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [activeTab]);
 
-  // 🟢 --- CAMERA SCANNER LOGIC ---
   useEffect(() => {
       if (isCameraOpen) {
           import('html5-qrcode').then(({ Html5QrcodeScanner }) => {
@@ -147,8 +150,8 @@ export default function Outbound() {
             current_qty: invMap[p.product_id]?.total_qty || 0,
             unit: p.base_uom || 'Piece',
             location: invMap[p.product_id] ? Array.from(invMap[p.product_id].locs).join(', ') : (p.default_location || 'MAIN'),
-            category: p.category || 'Uncategorized', // 🟢 เพิ่ม Category (Zone)
-            shelf_position: p.shelf_position || '-', // 🟢 เพิ่ม Shelf Position
+            category: p.category || 'Uncategorized', 
+            shelf_position: p.shelf_position || '-', 
             standard_cost: Number(p.standard_cost) || 0
         }));
 
@@ -176,7 +179,6 @@ export default function Outbound() {
           const existingIdx = prevCart.findIndex(c => c.productId === stockItem.product_id);
           if (existingIdx >= 0) {
               const newCart = [...prevCart];
-              // 🟢 รองรับทศนิยมโดยเปลี่ยนเป็น parseFloat แต่เวลาสแกนจะ +1 ก่อน
               newCart[existingIdx].qtyPicked = (parseFloat(newCart[existingIdx].qtyPicked) || 0) + 1;
               return newCart;
           } else {
@@ -186,8 +188,8 @@ export default function Outbound() {
                   qtyPicked: 1, 
                   stockQty: stockItem.current_qty, 
                   location: stockItem.location || '-', 
-                  category: stockItem.category, // 🟢 แนบ Category (Zone)
-                  shelf_position: stockItem.shelf_position, // 🟢 แนบ Shelf
+                  category: stockItem.category, 
+                  shelf_position: stockItem.shelf_position, 
                   unit: stockItem.unit || 'Piece',
                   standardCost: stockItem.standard_cost 
               }];
@@ -206,319 +208,363 @@ export default function Outbound() {
       }
   };
 
-  // 🟢 ตรวจสอบความถูกต้องโดยใช้ parseFloat
   const isCartValid = cart.every(item => (parseFloat(item.qtyPicked) || 0) > 0 && (parseFloat(item.qtyPicked) || 0) <= item.stockQty);
 
   const handleSubmitScan = async () => {
-    if (cart.length === 0) return alert("ตะกร้าว่างเปล่า");
-    if (!formData.branchName || !formData.branchId) return alert("กรุณาระบุสาขา/ผู้รับให้ถูกต้อง");
+      if (cart.length === 0) return alert("ตะกร้าว่างเปล่า");
+      if (!formData.branchName || !formData.branchId) return alert("กรุณาระบุสาขา/ผู้รับให้ถูกต้อง");
 
-    let forceReason = '';
-    if (!isCartValid) {
-        const reason = window.prompt("⚠️ มียอดเบิกเกินสต๊อกในระบบ!\nหากยืนยันต้องการ 'บังคับตัดสต๊อก (ติดลบ)' กรุณาระบุเหตุผล:");
-        if (reason === null) return; 
-        if (reason.trim() === '') return alert("ต้องระบุเหตุผลเพื่อเป็นหลักฐานในการบังคับตัด");
-        forceReason = reason;
-    } else {
-        if (!window.confirm(`ยืนยันการจ่ายสินค้า ไปยังสาขา: ${formData.branchName}?`)) return;
-    }
+      let forceReason = '';
+      if (!isCartValid) {
+          const reason = window.prompt("⚠️ มียอดเบิกเกินสต๊อกในระบบ!\nหากยืนยันต้องการ 'บังคับตัดสต๊อก (ติดลบ)' กรุณาระบุเหตุผล:");
+          if (reason === null) return; 
+          if (reason.trim() === '') return alert("ต้องระบุเหตุผลเพื่อเป็นหลักฐานในการบังคับตัด");
+          forceReason = reason;
+      } else {
+          if (!window.confirm(`ยืนยันการจ่ายสินค้า ไปยังสาขา: ${formData.branchName}?`)) return;
+      }
 
-    setLoading(true);
-    try {
-        const { data: exist } = await supabase.from('outbound_orders').select('to_number').eq('to_number', formData.docNo).single();
-        if (exist) {
-            alert(`❌ เลขเอกสาร ${formData.docNo} นี้ถูกใช้จ่ายออกไปแล้ว`);
-            setLoading(false); return;
-        }
+      setLoading(true);
+      try {
+          const { data: exist } = await supabase.from('outbound_orders').select('to_number').eq('to_number', formData.docNo).single();
+          if (exist) {
+              alert(`❌ เลขเอกสาร ${formData.docNo} นี้ถูกใช้จ่ายออกไปแล้ว`);
+              setLoading(false); return;
+          }
 
-        if (formData.refDoc) {
-            const { data: existRef } = await supabase.from('outbound_orders')
-                .select('to_number')
-                .or(`to_number.eq.${formData.refDoc},ref_document.eq.${formData.refDoc}`)
-                .limit(1);
-            if (existRef && existRef.length > 0) {
-                alert(`❌ เอกสารอ้างอิง "${formData.refDoc}" นี้มีประวัติถูกทำรายการจ่ายออกไปแล้วในระบบ`);
-                setLoading(false); return;
-            }
-        }
+          if (formData.refDoc) {
+              const { data: existRef } = await supabase.from('outbound_orders')
+                  .select('to_number')
+                  .or(`to_number.eq.${formData.refDoc},ref_document.eq.${formData.refDoc}`)
+                  .limit(1);
+              if (existRef && existRef.length > 0) {
+                  alert(`❌ เอกสารอ้างอิง "${formData.refDoc}" นี้มีประวัติถูกทำรายการจ่ายออกไปแล้วในระบบ`);
+                  setLoading(false); return;
+              }
+          }
 
-        await supabase.from('outbound_orders').insert([{
-            to_number: formData.docNo,
-            to_warehouse: formData.branchName,
-            ref_document: formData.refDoc || 'MANUAL',
-            delivery_date: new Date().toISOString().split('T')[0]
-        }]);
+          await supabase.from('outbound_orders').insert([{
+              to_number: formData.docNo,
+              to_warehouse: formData.branchName,
+              ref_document: formData.refDoc || 'MANUAL',
+              delivery_date: new Date().toISOString().split('T')[0]
+          }]);
 
-        const linesToInsert = [];
-        for (const item of cart) {
-            // 🟢 แปลงจำนวนที่เบิกให้เป็นทศนิยม
-            const qtyToDeduct = parseFloat(item.qtyPicked);
-            let remaining = qtyToDeduct;
-            const { data: lots } = await supabase.from('inventory_lots').select('*').eq('product_id', item.productId).gt('quantity', 0).order('mfg_date', { ascending: true, nullsFirst: false });
-            
-            for (const lot of (lots || [])) {
-                if (remaining <= 0) break;
-                const deductAmt = Math.min(Number(lot.quantity), remaining);
-                await supabase.from('inventory_lots').update({ quantity: Number(lot.quantity) - deductAmt }).eq('lot_id', lot.lot_id);
-                remaining -= deductAmt;
-            }
+          const linesToInsert = [];
+          for (const item of cart) {
+              const qtyToDeduct = parseFloat(item.qtyPicked);
+              let remaining = qtyToDeduct;
+              const { data: lots } = await supabase.from('inventory_lots').select('*').eq('product_id', item.productId).gt('quantity', 0).order('mfg_date', { ascending: true, nullsFirst: false });
+              
+              for (const lot of (lots || [])) {
+                  if (remaining <= 0) break;
+                  const deductAmt = Math.min(Number(lot.quantity), remaining);
+                  await supabase.from('inventory_lots').update({ quantity: Number(lot.quantity) - deductAmt }).eq('lot_id', lot.lot_id);
+                  remaining -= deductAmt;
+              }
 
-            if (remaining > 0) {
-                const { data: anyLot } = await supabase.from('inventory_lots').select('*').eq('product_id', item.productId).limit(1);
-                if (anyLot && anyLot.length > 0) {
-                    await supabase.from('inventory_lots').update({ quantity: Number(anyLot[0].quantity) - remaining }).eq('lot_id', anyLot[0].lot_id);
-                } else {
-                    await supabase.from('inventory_lots').insert([{ product_id: item.productId, quantity: -remaining, storage_location: 'PENDING_RCV' }]);
-                }
-            }
+              if (remaining > 0) {
+                  const { data: anyLot } = await supabase.from('inventory_lots').select('*').eq('product_id', item.productId).limit(1);
+                  if (anyLot && anyLot.length > 0) {
+                      await supabase.from('inventory_lots').update({ quantity: Number(anyLot[0].quantity) - remaining }).eq('lot_id', anyLot[0].lot_id);
+                  } else {
+                      await supabase.from('inventory_lots').insert([{ product_id: item.productId, quantity: -remaining, storage_location: 'PENDING_RCV' }]);
+                  }
+              }
 
-            const { data: newLots } = await supabase.from('inventory_lots').select('quantity').eq('product_id', item.productId);
-            const newBalance = newLots?.reduce((sum, l) => sum + Number(l.quantity), 0) || 0;
+              const { data: newLots } = await supabase.from('inventory_lots').select('quantity').eq('product_id', item.productId);
+              const newBalance = newLots?.reduce((sum, l) => sum + Number(l.quantity), 0) || 0;
 
-            const costAmt = qtyToDeduct * (item.standardCost || 0);
+              const costAmt = qtyToDeduct * (item.standardCost || 0);
 
-            await supabase.from('transactions_log').insert([{
-                transaction_type: 'OUTBOUND', product_id: item.productId, quantity_change: -qtyToDeduct, balance_after: newBalance,
-                branch_id: formData.branchId, remarks: `จ่ายออกตามเอกสาร ${formData.docNo}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
-                metadata: { document_cost_amt: costAmt, unit_cost: item.standardCost, unit: item.unit } // 🟢 บันทึก unit เข้า metadata ให้ AI ตรวจจับได้
-            }]);
+              await supabase.from('transactions_log').insert([{
+                  transaction_type: 'OUTBOUND', product_id: item.productId, quantity_change: -qtyToDeduct, balance_after: newBalance,
+                  branch_id: formData.branchId, remarks: `จ่ายออกตามเอกสาร ${formData.docNo}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
+                  metadata: { document_cost_amt: costAmt, unit_cost: item.standardCost, unit: item.unit } 
+              }]);
 
-            linesToInsert.push({
-                to_number: formData.docNo, rm_code: item.productId, description: item.productName, qty: qtyToDeduct, unit: item.unit
-            });
-        }
-        await supabase.from('outbound_lines').insert(linesToInsert);
+              linesToInsert.push({
+                  to_number: formData.docNo, rm_code: item.productId, description: item.productName, qty: qtyToDeduct, unit: item.unit
+              });
+          }
+          await supabase.from('outbound_lines').insert(linesToInsert);
 
-        alert("✅ จ่ายสินค้าออกสำเร็จ!");
-        setCart([]);
-        setFormData(prev => ({...prev, docNo: `TO-MNL-${Date.now()}`, refDoc: '', branchId: '', branchName: ''}));
-        setBranchSearchInput('');
-        fetchMasterData();
-    } catch (error: any) { alert("❌ Error: " + error.message); }
-    setLoading(false);
+          alert("✅ จ่ายสินค้าออกสำเร็จ!");
+          setCart([]);
+          setFormData(prev => ({...prev, docNo: `TO-MNL-${Date.now()}`, refDoc: '', branchId: '', branchName: ''}));
+          setBranchSearchInput('');
+          fetchMasterData();
+      } catch (error: any) { alert("❌ Error: " + error.message); }
+      setLoading(false);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
 
-    setLoading(true);
-    try {
-        const allParsedOrders: Record<string, ParsedOrder> = {};
+      setLoading(true);
+      try {
+          const allParsedOrders: Record<string, ParsedOrder> = {};
 
-        const readFilePromises = Array.from(files).map(file => {
-            return new Promise<void>((resolve, reject) => {
-                
-                const dateFromFilename = extractDateFromFilename(file.name);
+          const { data: pData } = await supabase.from('master_products').select('product_id, product_name, standard_cost, base_uom'); 
 
-                const reader = new FileReader();
-                reader.onload = (evt: any) => {
-                    try {
-                        const data = new Uint8Array(evt.target.result);
-                        const workbook = XLSX.read(data, { type: 'array' });
-                        const rows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "" });
+          const readFilePromises = Array.from(files).map(file => {
+              return new Promise<void>((resolve, reject) => {
+                  
+                  const dateFromFilename = extractDateFromFilename(file.name);
 
-                        let currentHeader: ParsedOrder | null = null;
+                  const reader = new FileReader();
+                  reader.onload = async (evt: any) => {
+                      try {
+                          const data = new Uint8Array(evt.target.result);
+                          const workbook = XLSX.read(data, { type: 'array' });
+                          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                          const rows = XLSX.utils.sheet_to_json<any>(sheet, { header: 1, defval: "" }); 
 
-                        for (let i = 0; i < rows.length; i++) {
-                            const row = rows[i];
-                            if (!row || row.length === 0) continue;
+                          let currentHeader: ParsedOrder | null = null;
 
-                            const col0 = String(row[0]).trim();
+                          const { data: lotData } = await supabase.from('inventory_lots').select('product_id, quantity');
+                          
+                          const stockMap: Record<string, number> = {};
+                          (lotData || []).forEach(l => { stockMap[l.product_id] = (stockMap[l.product_id] || 0) + Number(l.quantity); });
 
-                            if (col0.startsWith("TO-")) {
-                                let dDate = dateFromFilename;
-                                if (!dDate) {
-                                    dDate = String(row[4]).trim();
-                                    if (dDate.includes('/')) {
-                                        const [d, m, y] = dDate.split('/');
-                                        dDate = `${y}-${m}-${d}`;
-                                    }
-                                }
+                          for (let i = 0; i < rows.length; i++) {
+                              const row = rows[i];
+                              if (!row || row.length === 0) continue;
 
-                                currentHeader = {
-                                    to_number: col0, 
-                                    to_warehouse: String(row[1]).trim(), 
-                                    ref_document: String(row[3]).trim(), 
-                                    delivery_date: dDate || new Date().toISOString().split('T')[0], 
-                                    items: [], 
-                                    isDuplicate: false,
-                                    source_file: file.name
-                                };
-                                
-                                if(!allParsedOrders[col0]) {
-                                    allParsedOrders[col0] = currentHeader;
-                                }
-                                continue;
-                            }
+                              const col0 = String(row[0]).trim();
 
-                            if (currentHeader && col0 && !col0.startsWith("TO-") && !col0.includes("Total") && String(row[3]) !== "Total") {
-                                // 🟢 เปลี่ยนจาก parseInt เป็น parseFloat ให้ไฟล์ Excel รองรับทศนิยม
-                                const qty = parseFloat(row[2]) || 0;
-                                if (qty > 0) {
-                                    const stockItem = inventory.find(inv => inv.product_id === col0);
-                                    const currentStock = stockItem ? stockItem.current_qty : 0;
-                                    
-                                    const unitCost = parseFloat(row[4]) || 0;
-                                    const costAmt = parseFloat(row[6]) || (qty * unitCost) || 0;
-                                    
-                                    const targetOrder = allParsedOrders[currentHeader.to_number];
-                                    if(targetOrder) {
-                                        targetOrder.items.push({
-                                            rm_code: col0, description: String(row[1]).trim(), qty: qty, unit: String(row[3]).trim(), 
-                                            unit_cost: unitCost, cost_amt: costAmt, 
-                                            inStock: currentStock, hasError: currentStock < qty 
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        resolve();
-                    } catch (err) {
-                        reject(err);
-                    }
-                };
-                reader.readAsArrayBuffer(file);
-            });
-        });
+                              if (col0.startsWith("TO-")) {
+                                  let dDate = dateFromFilename;
+                                  if (!dDate) {
+                                      dDate = String(row[4]).trim();
+                                      if (dDate.includes('/')) {
+                                          const [d, m, y] = dDate.split('/');
+                                          dDate = `${y}-${m}-${d}`;
+                                      }
+                                  }
 
-        await Promise.all(readFilePromises);
+                                  currentHeader = {
+                                      to_number: col0, 
+                                      to_warehouse: String(row[1]).trim(), 
+                                      ref_document: String(row[3]).trim(), 
+                                      delivery_date: dDate || new Date().toISOString().split('T')[0], 
+                                      items: [], 
+                                      isDuplicate: false,
+                                      source_file: file.name
+                                  };
+                                  
+                                  if(!allParsedOrders[col0]) {
+                                      allParsedOrders[col0] = currentHeader;
+                                  }
+                                  continue;
+                              }
 
-        const toNumbers = Object.keys(allParsedOrders);
-        if (toNumbers.length > 0) {
-            const { data: existByToNumber } = await supabase.from('outbound_orders').select('to_number').in('to_number', toNumbers);
-            const { data: existByRef } = await supabase.from('outbound_orders').select('ref_document').in('ref_document', toNumbers);
-            
-            const duplicateSet = new Set([ ...(existByToNumber?.map(d => d.to_number) || []), ...(existByRef?.map(d => d.ref_document) || []) ]);
-            Object.values(allParsedOrders).forEach(order => { if (duplicateSet.has(order.to_number)) order.isDuplicate = true; });
-        }
+                              if (currentHeader && col0 && !col0.startsWith("TO-") && !col0.includes("Total") && String(row[3]) !== "Total") {
+                                  const qty = parseFloat(row[2]) || 0;
+                                  if (qty > 0) {
+                                      const stockItem = inventory.find(inv => inv.product_id === col0);
+                                      const currentStock = stockItem ? stockItem.current_qty : 0;
+                                      
+                                      const unitCost = parseFloat(row[4]) || 0;
+                                      const costAmt = parseFloat(row[6]) || (qty * unitCost) || 0;
+                                      
+                                      const productInfo = pData?.find(p => p.product_id === col0);
+                                      const expectedUom = productInfo?.base_uom || 'Unit';
+                                      const excelUnit = String(row[3]).trim();
+                                      const isMismatch = !!productInfo && excelUnit.toLowerCase() !== expectedUom.toLowerCase();
 
-        const globalReq: Record<string, number> = {};
-        Object.values(allParsedOrders).filter(o => !o.isDuplicate).forEach(o => o.items.forEach(i => globalReq[i.rm_code] = (globalReq[i.rm_code] || 0) + i.qty));
-        
-        Object.values(allParsedOrders).filter(o => !o.isDuplicate).forEach(o => {
-            o.items.forEach(i => {
-                const stockItem = inventory.find(inv => inv.product_id === i.rm_code);
-                if (!stockItem || stockItem.current_qty < globalReq[i.rm_code]) i.hasError = true;
-            });
-        });
+                                      const targetOrder = allParsedOrders[currentHeader.to_number];
+                                      if(targetOrder) {
+                                          targetOrder.items.push({
+                                              rm_code: col0, 
+                                              description: String(row[1]).trim(), 
+                                              qty: qty, 
+                                              unit: excelUnit, 
+                                              expected_uom: expectedUom,
+                                              uom_mismatch: isMismatch, 
+                                              unit_cost: unitCost, 
+                                              cost_amt: costAmt, 
+                                              inStock: currentStock, 
+                                              hasError: currentStock < qty || isMismatch 
+                                          });
+                                      }
+                                  }
+                              }
+                          }
+                          resolve();
+                      } catch (err) {
+                          reject(err);
+                      }
+                  };
+                  reader.readAsArrayBuffer(file);
+              });
+          });
 
-        setBulkOrders(Object.values(allParsedOrders));
-        setExpandedOrder(Object.values(allParsedOrders)[0]?.to_number || null);
+          await Promise.all(readFilePromises);
 
-    } catch (error: any) { alert("เกิดข้อผิดพลาดในการอ่านไฟล์: " + error.message); }
-    setLoading(false);
-    e.target.value = ''; 
+          const toNumbers = Object.keys(allParsedOrders);
+          if (toNumbers.length > 0) {
+              const { data: existByToNumber } = await supabase.from('outbound_orders').select('to_number').in('to_number', toNumbers);
+              const { data: existByRef } = await supabase.from('outbound_orders').select('ref_document').in('ref_document', toNumbers);
+              
+              const duplicateSet = new Set([ ...(existByToNumber?.map(d => d.to_number) || []), ...(existByRef?.map(d => d.ref_document) || []) ]);
+              Object.values(allParsedOrders).forEach(order => { if (duplicateSet.has(order.to_number)) order.isDuplicate = true; });
+          }
+
+          setBulkOrders(Object.values(allParsedOrders));
+          
+          const initialExpanded: Record<number, boolean> = {};
+          Object.values(allParsedOrders).forEach((_, idx) => { if(idx < 3) initialExpanded[idx] = true; });
+          setExpandedOrders(initialExpanded);
+
+          setUploadStats({
+              total: Object.values(allParsedOrders).length,
+              dupes: Object.values(allParsedOrders).filter(o => o.isDuplicate).length
+          });
+
+      } catch (error: any) { alert("เกิดข้อผิดพลาดในการอ่านไฟล์: " + error.message); }
+      setLoading(false);
+      e.target.value = ''; 
+  };
+
+  const handleResolveUom = (orderIndex: number, itemIndex: number, newQty: number) => {
+      if (newQty <= 0) return alert("กรุณาใส่จำนวนที่มากกว่า 0");
+
+      const updated = [...bulkOrders];
+      const item = updated[orderIndex].items[itemIndex];
+      
+      item.qty = newQty;
+      item.unit = item.expected_uom || 'Unit';
+      item.uom_mismatch = false;
+      item.cost_amt = newQty * (item.unit_cost || 0);
+      
+      item.hasError = (item.inStock || 0) < newQty; 
+
+      setBulkOrders(updated);
   };
 
   const validOrdersToProcess = bulkOrders.filter(o => !o.isDuplicate);
-  const needsForceIssue = validOrdersToProcess.some(o => o.items.some(i => i.hasError));
+  const needsForceIssue = validOrdersToProcess.some(o => o.items.some(i => i.hasError && !i.uom_mismatch)); 
+  const hasUomMismatchOverall = validOrdersToProcess.some(o => o.items.some(i => i.uom_mismatch));
 
   const handleSubmitBulk = async () => {
-    if (validOrdersToProcess.length === 0) return alert("ไม่มีเอกสารใหม่ให้บันทึก (เป็นเอกสารซ้ำทั้งหมด)");
-    
-    let forceReason = '';
-    if (needsForceIssue) {
-        const reason = window.prompt("⚠️ พบรายการที่สต๊อกไม่พอจ่าย!\nหากต้องการ 'บังคับตัดสต๊อก' กรุณาระบุเหตุผลเพื่อบันทึกในระบบ:");
-        if (reason === null) return; 
-        if (reason.trim() === '') return alert("กรุณาระบุเหตุผล หากต้องการบังคับตัดสต๊อก");
-        forceReason = reason;
-    } else {
-        if (!window.confirm(`ระบบจะตัดเฉพาะเอกสารที่ไม่ซ้ำ\nยืนยันนำเข้าและจ่ายสินค้าจำนวน ${validOrdersToProcess.length} บิล?`)) return;
-    }
+      if (validOrdersToProcess.length === 0) return alert("ไม่มีเอกสารใหม่ให้บันทึก (เป็นเอกสารซ้ำทั้งหมด)");
+      
+      if (hasUomMismatchOverall) {
+          return alert("⚠️ พบรายการที่ 'หน่วยนับ' ไม่ตรงกับระบบ (ไฮไลท์สีแดง)\n\nกรุณากรอกตัวเลขจำนวนใหม่ให้เป็นหน่วยที่ระบบต้องการ และกดปุ่ม ✅ เพื่อยืนยันให้ครบทุกรายการก่อนครับ");
+      }
 
-    setLoading(true);
-    try {
-        const requiredProducts = [...new Set(validOrdersToProcess.flatMap(o => o.items.map(i => i.rm_code)))];
-        
-        const { data: allLots } = await supabase.from('inventory_lots')
-            .select('*').in('product_id', requiredProducts).gt('quantity', 0)
-            .order('mfg_date', { ascending: true, nullsFirst: false });
+      let forceReason = '';
+      if (needsForceIssue) {
+          const reason = window.prompt("⚠️ พบรายการที่สต๊อกไม่พอจ่าย!\nหากต้องการ 'บังคับตัดสต๊อก' กรุณาระบุเหตุผลเพื่อบันทึกในระบบ:");
+          if (reason === null) return; 
+          if (reason.trim() === '') return alert("กรุณาระบุเหตุผล หากต้องการบังคับตัดสต๊อก");
+          forceReason = reason;
+      } else {
+          if (!window.confirm(`ระบบจะตัดเฉพาะเอกสารที่ไม่ซ้ำ\nยืนยันนำเข้าและจ่ายสินค้าจำนวน ${validOrdersToProcess.length} บิล?`)) return;
+      }
 
-        const lotsByProduct: Record<string, any[]> = {};
-        requiredProducts.forEach(id => lotsByProduct[id] = []);
-        (allLots || []).forEach(lot => {
-            lotsByProduct[lot.product_id].push({...lot}); 
-        });
+      setLoading(true);
+      try {
+          const requiredProducts = [...new Set(validOrdersToProcess.flatMap(o => o.items.map(i => i.rm_code)))];
+          
+          const { data: allLots } = await supabase.from('inventory_lots')
+              .select('*').in('product_id', requiredProducts).gt('quantity', 0)
+              .order('mfg_date', { ascending: true, nullsFirst: false });
 
-        const balanceByProduct: Record<string, number> = {};
-        requiredProducts.forEach(id => {
-            balanceByProduct[id] = lotsByProduct[id].reduce((sum, l) => sum + Number(l.quantity), 0);
-        });
+          const lotsByProduct: Record<string, any[]> = {};
+          requiredProducts.forEach(id => lotsByProduct[id] = []);
+          (allLots || []).forEach(lot => {
+              lotsByProduct[lot.product_id].push({...lot}); 
+          });
 
-        const ordersToInsert: any[] = [];
-        const linesToInsert: any[] = [];
-        const logsToInsert: any[] = [];
-        const newLotsToInsert: any[] = [];
-        const lotsMapToUpsert = new Map<string, any>(); 
+          const balanceByProduct: Record<string, number> = {};
+          requiredProducts.forEach(id => {
+              balanceByProduct[id] = lotsByProduct[id].reduce((sum, l) => sum + Number(l.quantity), 0);
+          });
 
-        for (const order of validOrdersToProcess) {
-            const rawBranch = order.to_warehouse ? String(order.to_warehouse).trim() : '';
-            
-            const matchedBranch = branches.find(b => b.branch_id === rawBranch || b.branch_name === rawBranch);
-            const targetBranchId = matchedBranch ? matchedBranch.branch_id : rawBranch;
+          const ordersToInsert: any[] = [];
+          const linesToInsert: any[] = [];
+          const logsToInsert: any[] = [];
+          const newLotsToInsert: any[] = [];
+          const lotsMapToUpsert = new Map<string, any>(); 
 
-            ordersToInsert.push({
-                to_number: order.to_number, to_warehouse: order.to_warehouse,
-                ref_document: order.ref_document, delivery_date: order.delivery_date, summit_date: order.delivery_date 
-            });
+          for (const order of validOrdersToProcess) {
+              const rawBranch = order.to_warehouse ? String(order.to_warehouse).trim() : '';
+              
+              const matchedBranch = branches.find(b => b.branch_id === rawBranch || b.branch_name === rawBranch);
+              const targetBranchId = matchedBranch ? matchedBranch.branch_id : rawBranch;
 
-            for (const item of order.items) {
-                linesToInsert.push({
-                    to_number: order.to_number, rm_code: item.rm_code, description: item.description,
-                    qty: item.qty, unit: item.unit, unit_cost: item.unit_cost, cost_amt: item.cost_amt
-                });
+              ordersToInsert.push({
+                  to_number: order.to_number, to_warehouse: order.to_warehouse,
+                  ref_document: order.ref_document, delivery_date: order.delivery_date, summit_date: order.delivery_date 
+              });
 
-                let remaining = item.qty;
-                const productLots = lotsByProduct[item.rm_code];
+              for (const item of order.items) {
+                  linesToInsert.push({
+                      to_number: order.to_number, rm_code: item.rm_code, description: item.description,
+                      qty: item.qty, unit: item.unit, unit_cost: item.unit_cost, cost_amt: item.cost_amt
+                  });
 
-                for (const lot of productLots) {
-                    if (remaining <= 0) break;
-                    if (lot.quantity <= 0) continue; 
+                  let remaining = item.qty;
+                  const productLots = lotsByProduct[item.rm_code];
 
-                    const deductAmt = Math.min(lot.quantity, remaining);
-                    lot.quantity -= deductAmt;
-                    remaining -= deductAmt;
+                  for (const lot of productLots) {
+                      if (remaining <= 0) break;
+                      if (lot.quantity <= 0) continue; 
 
-                    lotsMapToUpsert.set(lot.lot_id, {
-                        lot_id: lot.lot_id, product_id: lot.product_id, storage_location: lot.storage_location,
-                        quantity: lot.quantity, mfg_date: lot.mfg_date, exp_date: lot.exp_date
-                    });
-                }
+                      const deductAmt = Math.min(lot.quantity, remaining);
+                      lot.quantity -= deductAmt;
+                      remaining -= deductAmt;
 
-                if (remaining > 0) {
-                    newLotsToInsert.push({ product_id: item.rm_code, quantity: -remaining, storage_location: 'PENDING_RCV' });
-                }
+                      lotsMapToUpsert.set(lot.lot_id, {
+                          lot_id: lot.lot_id, product_id: lot.product_id, storage_location: lot.storage_location,
+                          quantity: lot.quantity, mfg_date: lot.mfg_date, exp_date: lot.exp_date
+                      });
+                  }
 
-                balanceByProduct[item.rm_code] -= item.qty;
-                const txDate = order.delivery_date ? `${order.delivery_date}T12:00:00.000Z` : new Date().toISOString();
+                  if (remaining > 0) {
+                      newLotsToInsert.push({ product_id: item.rm_code, quantity: -remaining, storage_location: 'PENDING_RCV' });
+                  }
 
-                logsToInsert.push({
-                    transaction_type: 'OUTBOUND', product_id: item.rm_code, quantity_change: -item.qty,
-                    balance_after: balanceByProduct[item.rm_code], branch_id: targetBranchId, 
-                    remarks: `จ่ายออกตามเอกสาร ${order.to_number}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
-                    transaction_date: txDate,
-                    metadata: { document_cost_amt: item.cost_amt, unit_cost: item.unit_cost, unit: item.unit }
-                });
-            }
-        }
+                  balanceByProduct[item.rm_code] -= item.qty;
+                  const txDate = order.delivery_date ? `${order.delivery_date}T12:00:00.000Z` : new Date().toISOString();
 
-        const promises = [];
-        if (ordersToInsert.length > 0) promises.push(supabase.from('outbound_orders').insert(ordersToInsert));
-        if (linesToInsert.length > 0) promises.push(supabase.from('outbound_lines').insert(linesToInsert));
-        if (logsToInsert.length > 0) promises.push(supabase.from('transactions_log').insert(logsToInsert));
-        if (newLotsToInsert.length > 0) promises.push(supabase.from('inventory_lots').insert(newLotsToInsert));
+                  logsToInsert.push({
+                      transaction_type: 'OUTBOUND', product_id: item.rm_code, quantity_change: -item.qty,
+                      balance_after: balanceByProduct[item.rm_code], branch_id: targetBranchId, 
+                      remarks: `จ่ายออกตามเอกสาร ${order.to_number}${forceReason ? ` (🚨 บังคับตัด: ${forceReason})` : ''}`,
+                      transaction_date: txDate,
+                      metadata: { document_cost_amt: item.cost_amt, unit_cost: item.unit_cost, unit: item.unit }
+                  });
+              }
+          }
 
-        const lotsToUpsert = Array.from(lotsMapToUpsert.values());
-        if (lotsToUpsert.length > 0) promises.push(supabase.from('inventory_lots').upsert(lotsToUpsert));
+          const promises = [];
+          if (ordersToInsert.length > 0) promises.push(supabase.from('outbound_orders').insert(ordersToInsert));
+          if (linesToInsert.length > 0) promises.push(supabase.from('outbound_lines').insert(linesToInsert));
+          if (logsToInsert.length > 0) promises.push(supabase.from('transactions_log').insert(logsToInsert));
+          if (newLotsToInsert.length > 0) promises.push(supabase.from('inventory_lots').insert(newLotsToInsert));
 
-        await Promise.all(promises);
+          const lotsToUpsert = Array.from(lotsMapToUpsert.values());
+          if (lotsToUpsert.length > 0) promises.push(supabase.from('inventory_lots').upsert(lotsToUpsert));
 
-        alert(`✅ นำเข้าข้อมูลและตัดสต๊อกสำเร็จ จำนวน ${validOrdersToProcess.length} เอกสาร `);
-        setBulkOrders([]);
-        fetchMasterData();
-    } catch (error: any) { alert("❌ Error: " + error.message); }
-    setLoading(false);
+          await Promise.all(promises);
+
+          alert(`✅ นำเข้าข้อมูลและตัดสต๊อกสำเร็จ จำนวน ${validOrdersToProcess.length} เอกสาร `);
+          setBulkOrders([]);
+          fetchMasterData();
+      } catch (error: any) { alert("❌ Error: " + error.message); }
+      setLoading(false);
+  };
+
+  const removeOrder = (index: number) => {
+      setBulkOrders(bulkOrders.filter((_, i) => i !== index));
+  };
+
+  const toggleOrderExpand = (index: number) => {
+      setExpandedOrders(prev => ({ ...prev, [index]: !prev[index] }));
   };
 
   const filteredInventory = inventory.filter(p => (p.product_name || '').toLowerCase().includes(productSearchTerm.toLowerCase()) || (p.product_id || '').toLowerCase().includes(productSearchTerm.toLowerCase())).slice(0, 10);
@@ -576,13 +622,11 @@ export default function Outbound() {
                                 <div className="min-w-0 pr-2">
                                     <div className="font-bold text-sm text-slate-700 truncate">{p.product_id}</div>
                                     <div className="text-xs text-slate-500 truncate">{p.product_name}</div>
-                                    {/* 🟢 แสดง Zone และ Shelf ตรงนี้ให้พนักงานรู้ว่าของอยู่ไหน */}
                                     <div className="text-[10px] text-cyan-600 mt-1 font-bold">
                                         <Layers size={10} className="inline mr-1"/> Zone: {p.category} | Shelf: {p.shelf_position}
                                     </div>
                                 </div>
                                 <div className="text-right flex flex-col items-end shrink-0">
-                                    {/* 🟢 รองรับทศนิยม */}
                                     <div className="text-xs font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded border border-green-100">Stock: {p.current_qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
                                     <Plus size={16} className="text-slate-300 mt-2 group-hover:text-red-600"/>
                                 </div>
@@ -640,7 +684,6 @@ export default function Outbound() {
                                     {cart.length === 0 ? (
                                         <tr><td colSpan={6} className="p-12 text-center text-slate-400 h-64"><ShoppingCart size={48} className="opacity-20 mb-4 mx-auto"/><p>แสกนสินค้า หรือเลือกจากรายการด้านซ้าย</p></td></tr>
                                     ) : cart.map((item, idx) => {
-                                        // 🟢 ตรวจสอบ Error ด้วย parseFloat
                                         const isError = (parseFloat(item.qtyPicked) || 0) > item.stockQty;
                                         return (
                                         <tr key={idx} className={`${isError ? 'bg-orange-50/50' : ''}`}>
@@ -648,18 +691,14 @@ export default function Outbound() {
                                             <td className="p-3">
                                                 <div className="font-bold">{item.productId}</div>
                                                 <div className="text-xs text-slate-500 truncate max-w-[250px]" title={item.productName}>{item.productName}</div>
-                                                
-                                                {/* 🟢 แสดง Zone / Shelf ให้เห็นชัดๆ ในตะกร้า */}
                                                 <div className="mt-1 flex items-center gap-1">
                                                     <span className="text-[10px] font-bold text-cyan-600 bg-cyan-50 border border-cyan-100 px-1.5 py-0.5 rounded">Zone: {item.category}</span>
                                                     <span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">Shelf: {item.shelf_position}</span>
                                                 </div>
-
                                                 {isError && <span className="text-[10px] text-orange-500 font-bold block mt-1">สต๊อกไม่พอ (ต้องบังคับตัด)</span>}
                                             </td>
                                             <td className="p-3 text-center font-mono bg-slate-50">{item.stockQty.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                             <td className="p-3 text-center bg-red-50/30 border-x">
-                                                {/* 🟢 เพิ่ม step="0.01" ให้ใส่ทศนิยมได้ */}
                                                 <input type="number" step="0.01" className={`w-full p-2 border rounded-lg text-center font-bold outline-none ${isError ? 'border-orange-500 text-orange-600 bg-orange-50' : 'border-slate-300'}`} value={item.qtyPicked} onChange={e => {const newCart = [...cart]; newCart[idx].qtyPicked = e.target.value; setCart(newCart);}}/>
                                             </td>
                                             <td className="p-3 text-center text-xs uppercase">{item.unit}</td>
@@ -672,7 +711,6 @@ export default function Outbound() {
                     </div>
 
                     <div className="bg-white p-4 border-t flex flex-col md:flex-row justify-between items-center shadow-lg gap-4">
-                        {/* 🟢 ปรับยอดรวมให้แสดงทศนิยม 2 ตำแหน่ง */}
                         <div className="text-sm font-bold">รวม: {cart.reduce((a,b) => a + (parseFloat(b.qtyPicked)||0), 0).toLocaleString(undefined, {maximumFractionDigits: 2})} ชิ้น</div>
                         <button 
                             onClick={handleSubmitScan} 
@@ -694,27 +732,40 @@ export default function Outbound() {
                         </label>
                     </div>
 
+                    {/* 🟢 แจ้งเตือน UOM Mismatch */}
+                    {hasUomMismatchOverall && (
+                        <div className="mb-6 bg-rose-50 border border-rose-400 p-4 rounded-2xl flex items-start gap-3 shadow-sm animate-pulse">
+                            <ShieldAlert size={24} className="text-rose-600 shrink-0"/>
+                            <div>
+                                <h3 className="font-black text-rose-800 text-lg">⚠️ พบรายการที่ "หน่วยนับ" (UOM) ไม่ตรงกับระบบ!</h3>
+                                <p className="text-rose-700 text-sm mt-1 font-medium">เพื่อป้องกันสต๊อกเพี้ยน ระบบได้ทำการล็อคการนำเข้าไว้ <b>กรุณาดูที่ตารางด้านล่างและแปลงตัวเลขให้เป็นหน่วยที่ระบบต้องการ แล้วกด ✅ เพื่อยืนยัน</b></p>
+                            </div>
+                        </div>
+                    )}
+
                     {bulkOrders.length > 0 && (
                         <div className="flex-1 overflow-auto bg-white rounded-xl shadow border flex flex-col min-w-0">
                             <div className="p-4 bg-slate-50 border-b flex flex-col md:flex-row justify-between items-center shrink-0 gap-4">
-                                <div className="font-bold text-slate-700">พบ {bulkOrders.length} เอกสาร (ซ้ำ {bulkOrders.filter(o=>o.isDuplicate).length} ใบ)</div>
+                                <div className="font-bold text-slate-700">พบ {uploadStats.total} เอกสาร (ซ้ำ {uploadStats.dupes} ใบ)</div>
                                 <button 
                                     onClick={handleSubmitBulk} 
-                                    disabled={validOrdersToProcess.length === 0 || loading} 
-                                    className={`w-full md:w-auto px-6 py-2 rounded-lg text-white font-bold shadow ${validOrdersToProcess.length === 0 ? 'bg-slate-400' : needsForceIssue ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'}`}
+                                    disabled={validOrdersToProcess.length === 0 || loading || hasUomMismatchOverall} 
+                                    className={`w-full md:w-auto px-6 py-2 rounded-lg text-white font-bold shadow transition-colors ${validOrdersToProcess.length === 0 || hasUomMismatchOverall ? 'bg-slate-400 cursor-not-allowed' : needsForceIssue ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'}`}
                                 >
-                                    {loading ? 'Processing...' : needsForceIssue ? `บังคับนำเข้าและตัดสต๊อก (${validOrdersToProcess.length})` : `⚡ นำเข้าและตัดสต๊อกทันที (${validOrdersToProcess.length})`}
+                                    {loading ? 'Processing...' : needsForceIssue && !hasUomMismatchOverall ? `บังคับนำเข้าและตัดสต๊อก (${validOrdersToProcess.length})` : `⚡ นำเข้าและตัดสต๊อกทันที (${validOrdersToProcess.length})`}
                                 </button>
                             </div>
                             
                             <div className="p-4 space-y-4 flex-1 overflow-y-auto min-w-0">
-                                {needsForceIssue && <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg text-orange-700 text-sm font-bold flex items-center gap-2"><AlertCircle size={16}/> มีเอกสารที่สต๊อกไม่พอจ่าย คุณสามารถกดนำเข้าได้ แต่ระบบจะถามเหตุผลการบังคับตัด</div>}
+                                {needsForceIssue && !hasUomMismatchOverall && <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg text-orange-700 text-sm font-bold flex items-center gap-2"><AlertCircle size={16}/> มีเอกสารที่สต๊อกไม่พอจ่าย คุณสามารถกดนำเข้าได้ แต่ระบบจะถามเหตุผลการบังคับตัด</div>}
                                 
-                                {bulkOrders.map(order => (
-                                    <div key={order.to_number} className={`border rounded-lg overflow-hidden ${order.isDuplicate ? 'border-red-400' : order.items.some(i => i.hasError) ? 'border-orange-400' : 'border-slate-200'}`}>
-                                        <div onClick={() => setExpandedOrder(expandedOrder === order.to_number ? null : order.to_number)} className={`p-4 flex flex-col md:flex-row justify-between md:items-center cursor-pointer gap-2 ${order.isDuplicate ? 'bg-red-100/50' : order.items.some(i => i.hasError) ? 'bg-orange-50' : 'bg-slate-50 hover:bg-slate-100'}`}>
+                                {bulkOrders.map((order, oIndex) => (
+                                    <div key={order.to_number} className={`border rounded-lg overflow-hidden ${order.isDuplicate ? 'border-red-400' : order.items.some(i => i.hasError || i.uom_mismatch) ? 'border-orange-400' : 'border-slate-200'}`}>
+                                        <div onClick={() => toggleOrderExpand(oIndex)} className={`p-4 flex flex-col md:flex-row justify-between md:items-center cursor-pointer gap-2 ${order.isDuplicate ? 'bg-red-100/50' : order.items.some(i => i.hasError || i.uom_mismatch) ? 'bg-orange-50' : 'bg-slate-50 hover:bg-slate-100'}`}>
                                             <div className="flex items-center gap-4">
-                                                {expandedOrder === order.to_number ? <ChevronUp size={20}/> : <ChevronDown size={20}/>}
+                                                <button className="text-slate-400 hover:text-slate-700">
+                                                    {expandedOrders[oIndex] ? <ChevronUp size={20}/> : <ChevronDown size={20}/>}
+                                                </button>
                                                 <div>
                                                     <div className="font-bold text-blue-700 text-lg flex items-center gap-2">
                                                         {order.to_number}
@@ -734,7 +785,7 @@ export default function Outbound() {
                                             </div>
                                         </div>
 
-                                        {expandedOrder === order.to_number && (
+                                        {expandedOrders[oIndex] && (
                                             <div className={`border-t bg-white overflow-x-auto ${order.isDuplicate ? 'opacity-50 pointer-events-none' : ''}`}>
                                                 <table className="w-full text-left text-sm whitespace-nowrap">
                                                     <thead className="bg-slate-50 text-slate-500 uppercase text-xs">
@@ -748,13 +799,47 @@ export default function Outbound() {
                                                     </thead>
                                                     <tbody className="divide-y">
                                                         {order.items.map((item, idx) => (
-                                                            <tr key={idx} className={!order.isDuplicate && item.hasError ? 'bg-orange-50/50' : ''}>
+                                                            <tr key={idx} className={!order.isDuplicate && (item.hasError || item.uom_mismatch) ? 'bg-orange-50/30' : ''}>
                                                                 <td className="p-2 pl-4 font-bold">{item.rm_code}</td>
                                                                 <td className="p-2 text-xs text-slate-600 truncate max-w-[200px]" title={item.description}>{item.description}</td>
                                                                 <td className="p-2 text-center bg-slate-50 text-xs font-mono text-blue-600">{item.inStock?.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
-                                                                <td className="p-2 text-center font-bold">
-                                                                    <span className={!order.isDuplicate && item.hasError ? 'text-orange-600' : 'text-green-600'}>{item.qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</span> <span className="text-[10px] text-slate-400">{item.unit}</span>
+                                                                
+                                                                {/* 🟢 Inline UOM Edit */}
+                                                                <td className="p-2 text-center">
+                                                                    {item.uom_mismatch && !order.isDuplicate ? (
+                                                                        <div className="flex flex-col items-center bg-rose-50 p-1.5 rounded-lg border border-rose-200 shadow-inner w-max mx-auto">
+                                                                            <span className="text-[10px] font-black text-rose-600 mb-1 flex items-center gap-1">
+                                                                                <AlertCircle size={12}/> {item.unit} ➡️ {item.expected_uom}
+                                                                            </span>
+                                                                            <div className="flex items-center gap-1">
+                                                                                <input 
+                                                                                    type="number" step="0.01"
+                                                                                    id={`fix-qty-${oIndex}-${idx}`}
+                                                                                    defaultValue={item.qty} 
+                                                                                    className="w-16 p-1 text-xs font-bold text-center border border-rose-300 rounded outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+                                                                                    title="กรุณาแปลงหน่วยเป็นจำนวนตามระบบ"
+                                                                                    onClick={(e) => e.stopPropagation()}
+                                                                                />
+                                                                                <button 
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        const input = document.getElementById(`fix-qty-${oIndex}-${idx}`) as HTMLInputElement;
+                                                                                        handleResolveUom(oIndex, idx, Number(input.value));
+                                                                                    }}
+                                                                                    className="p-1 bg-rose-500 text-white rounded hover:bg-rose-600 transition-colors shadow-sm"
+                                                                                    title="ยืนยันการแปลงหน่วย"
+                                                                                >
+                                                                                    <CheckCircle size={14}/>
+                                                                                </button>
+                                                                            </div>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="font-bold">
+                                                                            <span className={!order.isDuplicate && item.hasError ? 'text-orange-600' : 'text-green-600'}>{item.qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</span> <span className="text-[10px] text-slate-400">{item.unit}</span>
+                                                                        </div>
+                                                                    )}
                                                                 </td>
+
                                                                 <td className="p-2 text-right text-slate-500">{item.cost_amt.toLocaleString()} ฿</td>
                                                             </tr>
                                                         ))}
@@ -765,6 +850,12 @@ export default function Outbound() {
                                     </div>
                                 ))}
                             </div>
+                        </div>
+                    )}
+                    {bulkOrders.length === 0 && !loading && (
+                        <div className="flex-1 flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-white">
+                            <FileText size={64} className="opacity-20 mb-4"/>
+                            <p className="font-medium">อัปโหลดไฟล์ Excel เพื่อแสดงพรีวิวข้อมูล</p>
                         </div>
                     )}
                 </div>
@@ -785,7 +876,7 @@ export default function Outbound() {
                   </div>
                   <div className="p-4 text-center bg-slate-50 border-t">
                       <div className="text-sm font-bold text-slate-600">หันกล้องไปที่บาร์โค้ด หรือ QR Code</div>
-                      <div className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-widest">(ระบบจะเพิ่มสินค้าลงตะกร้าอัตโนมัติ)</div>
+                      <div className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-widest">(ระบบจะค้นหาสินค้าให้อัตโนมัติ)</div>
                   </div>
               </div>
           </div>
