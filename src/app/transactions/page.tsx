@@ -37,10 +37,10 @@ export default function TransactionLogPage() {
   const [journeyData, setJourneyData] = useState<any[]>([]);
   const [journeyLoading, setJourneyLoading] = useState(false);
 
-  // 🟢 State สำหรับการแก้ไขข้อมูล (Edit Modal)
+  // State สำหรับการแก้ไขข้อมูล (Edit Modal)
   const [editModal, setEditModal] = useState<any>(null);
   const [editQty, setEditQty] = useState('');
-  const [editPoNumber, setEditPoNumber] = useState(''); // 🟢 เพิ่ม State สำหรับแก้ PO
+  const [editPoNumber, setEditPoNumber] = useState(''); 
   const [editRemarks, setEditRemarks] = useState('');
 
   useEffect(() => {
@@ -65,7 +65,6 @@ export default function TransactionLogPage() {
       setLoading(true);
       setSyncProgress('กำลังเตรียมข้อมูล...');
       try {
-          // 🟢 ดึงข้อมูลสินค้า (เพิ่ม UOM และ Conversion สำหรับทำ Export)
           const [prodRes, branchRes] = await Promise.all([
               supabase.from('master_products').select('product_id, product_name, category, base_uom, purchase_uom, conversion_rate'),
               supabase.from('master_branches').select('branch_id, branch_name')
@@ -187,7 +186,6 @@ export default function TransactionLogPage() {
       setActionLoading(false);
   };
 
-  // 🟢 ฟังก์ชันแก้ไข Transaction (ปรับสต๊อก + อัปเดต PO Number)
   const handleEditSubmit = async () => {
       if (!editModal) return;
       if (!editRemarks.trim()) return alert("กรุณาระบุหมายเหตุเพื่อเป็นหลักฐานในการแก้ไข");
@@ -232,12 +230,11 @@ export default function TransactionLogPage() {
               finalRemarks = `[แก้ไข: ${editRemarks}] ` + finalRemarks.replace(/\[แก้ไข:.*?\] /, ''); 
           }
 
-          // 🟢 ดันเลข PO ใหม่เข้าไปใน Metadata
           const finalPoNumber = editPoNumber.trim() ? editPoNumber.trim() : null;
 
           const newMeta = {
               ...tx.metadata,
-              po_number: finalPoNumber, // อัปเดตเลข PO
+              po_number: finalPoNumber, 
               is_edited: true,
               edited_by: userEmail,
               edited_at: new Date().toISOString(),
@@ -254,7 +251,7 @@ export default function TransactionLogPage() {
 
           alert("✅ บันทึกการแก้ไขสำเร็จ! ข้อมูลถูกอัปเดตเข้าระบบและสต๊อกเรียบร้อยแล้ว");
           setEditModal(null);
-          fetchData(); // รีเฟรชตารางเพื่อให้ค้นหา PO ใหม่เจอทันที
+          fetchData(); 
       } catch (err: any) {
           alert("Error: " + err.message);
       }
@@ -276,7 +273,7 @@ export default function TransactionLogPage() {
           result = result.filter(tx => 
               (tx.product_id || '').toLowerCase().includes(lowerSearch) ||
               (tx.product_name || '').toLowerCase().includes(lowerSearch) ||
-              (tx.poNumber || '').toLowerCase().includes(lowerSearch) || // ค้นหา PO เจอแน่นอน
+              (tx.poNumber || '').toLowerCase().includes(lowerSearch) || 
               (tx.docRef || '').toLowerCase().includes(lowerSearch) ||
               (tx.branch_name || '').toLowerCase().includes(lowerSearch) ||
               (tx.transaction_id || '').toLowerCase().includes(lowerSearch)
@@ -294,90 +291,125 @@ export default function TransactionLogPage() {
       });
   }, [transactions, debouncedSearch, typeFilter, startDate, endDate, sortConfig]);
 
-  // 🟢 ฟังก์ชัน Export แบบแยกประเภทและเจาะลึก Conversion
-  const handleExport = () => {
+  // 🚀 ฟังก์ชัน Export แบบใหม่ ดึงข้อมูลลึกถึง MFG/EXP อัตโนมัติ
+  const handleExport = async () => {
       if (filteredData.length === 0) return alert("ไม่มีข้อมูลสำหรับ Export");
       
-      const wb = XLSX.utils.book_new();
+      setActionLoading(true); // เปิดหน้าต่าง Loading ป้องกันคนกดเบิ้ล
+      try {
+          const wb = XLSX.utils.book_new();
 
-      // --- 1. แยกข้อมูล INBOUND ---
-      const inboundData = filteredData.filter(tx => tx.transaction_type === 'INBOUND');
-      if (inboundData.length > 0) {
-          const inExport = inboundData.map(tx => {
-              const baseQty = Math.abs(tx.qty);
-              const convRate = tx.conversion_rate || 1;
-              const rcvLargeQty = baseQty / convRate; // คำนวณกลับเป็นหน่วยใหญ่
-              const ordLargeQty = tx.orderedQty ? (tx.orderedQty / convRate) : rcvLargeQty;
+          // --- 1. แยกข้อมูล INBOUND ---
+          const inboundData = filteredData.filter(tx => tx.transaction_type === 'INBOUND');
+          let inboundLinesMap: Record<string, any> = {};
 
-              return {
+          if (inboundData.length > 0) {
+              // 🟢 ดึงข้อมูล MFG / EXP จากตาราง inbound_receipts & inbound_lines มาประกอบร่าง (ดึงเฉพาะ DocRef ที่มีอยู่)
+              const docNos = [...new Set(inboundData.map(tx => tx.docRef).filter(ref => ref !== '-'))];
+              
+              if (docNos.length > 0) {
+                  const { data: receipts, error } = await supabase
+                      .from('inbound_receipts')
+                      .select('document_reference, inbound_lines(product_id, mfg_date, exp_date)')
+                      .in('document_reference', docNos);
+
+                  if (!error && receipts) {
+                      receipts.forEach((r: any) => {
+                          r.inbound_lines?.forEach((line: any) => {
+                              // จับคู่ด้วยเลข Doc + Product ID
+                              const key = `${r.document_reference}_${line.product_id}`;
+                              inboundLinesMap[key] = { mfg: line.mfg_date, exp: line.exp_date };
+                          });
+                      });
+                  }
+              }
+
+              const inExport = inboundData.map(tx => {
+                  const baseQty = Math.abs(tx.qty);
+                  const convRate = tx.conversion_rate || 1;
+                  const rcvLargeQty = baseQty / convRate; 
+                  const ordLargeQty = tx.orderedQty ? (tx.orderedQty / convRate) : rcvLargeQty;
+
+                  // ดึง MFG / EXP ที่ได้มาจาก Database เมื่อกี้
+                  const lineInfo = inboundLinesMap[`${tx.docRef}_${tx.product_id}`] || {};
+
+                  return {
+                      'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
+                      'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
+                      'ใบอ้างอิง (Doc Ref)': tx.docRef !== '-' ? tx.docRef : '',
+                      'เลขที่ใบสั่งซื้อ (PO)': tx.poNumber !== '-' ? tx.poNumber : '',
+                      'รหัสสินค้า (SKU)': tx.product_id,
+                      'ชื่อสินค้า (Product Name)': tx.product_name,
+                      'ยอดสั่งซื้อ (Order Qty)': ordLargeQty,
+                      'หน่วยสั่งซื้อ (Purchase UOM)': tx.purchase_uom,
+                      'จำนวนรับจริง (Receive Qty)': rcvLargeQty,
+                      'หน่วยรับ (Receive UOM)': tx.purchase_uom,
+                      'ยอดเข้าสต๊อก (Base Qty)': baseQty,
+                      'หน่วยย่อย (Base UOM)': tx.base_uom,
+                      'อัตราแปลง (Conversion)': `1 ${tx.purchase_uom} = ${convRate} ${tx.base_uom}`,
+                      'อุณหภูมิรถ (°C)': tx.metadata?.vehicle_temp ?? '-',     // 🟢 ข้อมูล Temp รถ
+                      'อุณหภูมิสินค้า (°C)': tx.metadata?.product_temp ?? '-',   // 🟢 ข้อมูล Temp สินค้า
+                      'วันที่ผลิต (MFG)': lineInfo.mfg ? new Date(lineInfo.mfg).toLocaleDateString('en-GB') : '-', // 🟢 ข้อมูลวันผลิต
+                      'วันหมดอายุ (EXP)': lineInfo.exp ? new Date(lineInfo.exp).toLocaleDateString('en-GB') : '-', // 🟢 ข้อมูลหมดอายุ
+                      'คงเหลือ (Balance)': tx.balance,
+                      'สถานะส่ง (Timing)': tx.timingStatus,
+                      'หมายเหตุ (Remarks)': tx.remarks || '-',
+                      'สถานะ (Audit)': tx.metadata?.is_edited ? `แก้ไขโดย ${tx.metadata.edited_by}` : 'ปกติ',
+                  };
+              });
+              const wsIn = XLSX.utils.json_to_sheet(inExport);
+              XLSX.utils.book_append_sheet(wb, wsIn, "รับเข้า (INBOUND)");
+          }
+
+          // --- 2. แยกข้อมูล OUTBOUND ---
+          const outboundData = filteredData.filter(tx => tx.transaction_type.includes('OUT') || tx.transaction_type.includes('DISP'));
+          if (outboundData.length > 0) {
+              const outExport = outboundData.map(tx => ({
                   'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
                   'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
-                  'ใบอ้างอิง (Doc Ref)': tx.docRef !== '-' ? tx.docRef : '',
-                  'เลขที่ใบสั่งซื้อ (PO)': tx.poNumber !== '-' ? tx.poNumber : '',
+                  'ใบเบิก/อ้างอิง (Doc Ref)': tx.docRef !== '-' ? tx.docRef : '',
+                  'สาขาปลายทาง (Branch)': tx.branch_name || '-',
                   'รหัสสินค้า (SKU)': tx.product_id,
                   'ชื่อสินค้า (Product Name)': tx.product_name,
-                  'ยอดสั่งซื้อ (Order Qty)': ordLargeQty,
-                  'หน่วยสั่งซื้อ (Purchase UOM)': tx.purchase_uom,
-                  'จำนวนรับจริง (Receive Qty)': rcvLargeQty,
-                  'หน่วยรับ (Receive UOM)': tx.purchase_uom,
-                  'ยอดเข้าสต๊อก (Base Qty)': baseQty,
-                  'หน่วยย่อย (Base UOM)': tx.base_uom,
-                  'อัตราแปลง (Conversion)': `1 ${tx.purchase_uom} = ${convRate} ${tx.base_uom}`,
+                  'ยอดจ่ายออก (Outbound Qty)': Math.abs(tx.qty),
+                  'หน่วย (Base UOM)': tx.base_uom,
                   'คงเหลือ (Balance)': tx.balance,
-                  'สถานะส่ง (Timing)': tx.timingStatus,
                   'หมายเหตุ (Remarks)': tx.remarks || '-',
                   'สถานะ (Audit)': tx.metadata?.is_edited ? `แก้ไขโดย ${tx.metadata.edited_by}` : 'ปกติ',
-              };
-          });
-          const wsIn = XLSX.utils.json_to_sheet(inExport);
-          XLSX.utils.book_append_sheet(wb, wsIn, "รับเข้า (INBOUND)");
-      }
+              }));
+              const wsOut = XLSX.utils.json_to_sheet(outExport);
+              XLSX.utils.book_append_sheet(wb, wsOut, "จ่ายออก (OUTBOUND)");
+          }
 
-      // --- 2. แยกข้อมูล OUTBOUND ---
-      const outboundData = filteredData.filter(tx => tx.transaction_type.includes('OUT') || tx.transaction_type.includes('DISP'));
-      if (outboundData.length > 0) {
-          const outExport = outboundData.map(tx => ({
-              'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
-              'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
-              'ใบเบิก/อ้างอิง (Doc Ref)': tx.docRef !== '-' ? tx.docRef : '',
-              'สาขาปลายทาง (Branch)': tx.branch_name || '-',
-              'รหัสสินค้า (SKU)': tx.product_id,
-              'ชื่อสินค้า (Product Name)': tx.product_name,
-              'ยอดจ่ายออก (Outbound Qty)': Math.abs(tx.qty),
-              'หน่วย (Base UOM)': tx.base_uom,
-              'คงเหลือ (Balance)': tx.balance,
-              'หมายเหตุ (Remarks)': tx.remarks || '-',
-              'สถานะ (Audit)': tx.metadata?.is_edited ? `แก้ไขโดย ${tx.metadata.edited_by}` : 'ปกติ',
-          }));
-          const wsOut = XLSX.utils.json_to_sheet(outExport);
-          XLSX.utils.book_append_sheet(wb, wsOut, "จ่ายออก (OUTBOUND)");
-      }
+          // --- 3. แยกข้อมูล ADJUST (ปรับยอด) ---
+          const adjustData = filteredData.filter(tx => tx.transaction_type === 'ADJUST');
+          if (adjustData.length > 0) {
+              const adjExport = adjustData.map(tx => ({
+                  'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
+                  'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
+                  'รหัสสินค้า (SKU)': tx.product_id,
+                  'ชื่อสินค้า (Product Name)': tx.product_name,
+                  'ยอดที่ปรับ (+/-)': tx.qty,
+                  'หน่วย (Base UOM)': tx.base_uom,
+                  'คงเหลือ (Balance)': tx.balance,
+                  'สาเหตุ/หมายเหตุ (Remarks)': tx.remarks || '-',
+                  'สถานะ (Audit)': tx.metadata?.is_edited ? `แก้ไขโดย ${tx.metadata.edited_by}` : 'ปกติ',
+              }));
+              const wsAdj = XLSX.utils.json_to_sheet(adjExport);
+              XLSX.utils.book_append_sheet(wb, wsAdj, "ปรับยอด (ADJUST)");
+          }
 
-      // --- 3. แยกข้อมูล ADJUST (ปรับยอด) ---
-      const adjustData = filteredData.filter(tx => tx.transaction_type === 'ADJUST');
-      if (adjustData.length > 0) {
-          const adjExport = adjustData.map(tx => ({
-              'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
-              'เวลา (Time)': tx.dateObj.toLocaleTimeString('th-TH'),
-              'รหัสสินค้า (SKU)': tx.product_id,
-              'ชื่อสินค้า (Product Name)': tx.product_name,
-              'ยอดที่ปรับ (+/-)': tx.qty,
-              'หน่วย (Base UOM)': tx.base_uom,
-              'คงเหลือ (Balance)': tx.balance,
-              'สาเหตุ/หมายเหตุ (Remarks)': tx.remarks || '-',
-              'สถานะ (Audit)': tx.metadata?.is_edited ? `แก้ไขโดย ${tx.metadata.edited_by}` : 'ปกติ',
-          }));
-          const wsAdj = XLSX.utils.json_to_sheet(adjExport);
-          XLSX.utils.book_append_sheet(wb, wsAdj, "ปรับยอด (ADJUST)");
-      }
+          if (wb.SheetNames.length === 0) {
+              const wsFall = XLSX.utils.json_to_sheet(filteredData);
+              XLSX.utils.book_append_sheet(wb, wsFall, "Transactions");
+          }
 
-      if (wb.SheetNames.length === 0) {
-          // Fallback ถ้ากรองแล้วได้ Data แปลกๆ
-          const wsFall = XLSX.utils.json_to_sheet(filteredData);
-          XLSX.utils.book_append_sheet(wb, wsFall, "Transactions");
+          XLSX.writeFile(wb, `WMS_Transactions_${new Date().toISOString().split('T')[0]}.xlsx`);
+          
+      } catch (error: any) {
+          alert("Export Error: " + error.message);
       }
-
-      XLSX.writeFile(wb, `WMS_Transactions_${new Date().toISOString().split('T')[0]}.xlsx`);
+      setActionLoading(false);
   };
 
   const handleSort = (key: string) => {
@@ -395,7 +427,7 @@ export default function TransactionLogPage() {
           <div className="absolute inset-0 bg-white/70 backdrop-blur-sm z-[100] flex flex-col items-center justify-center">
               <Activity size={48} className="text-amber-500 animate-spin mb-4"/>
               <div className="font-black text-slate-800 tracking-widest uppercase text-lg">Processing Data...</div>
-              <div className="text-slate-500 font-bold mt-1 text-sm">กำลังบันทึกและปรับปรุงยอดสต๊อก กรุณารอสักครู่</div>
+              <div className="text-slate-500 font-bold mt-1 text-sm">กำลังประมวลผลข้อมูล กรุณารอสักครู่</div>
           </div>
       )}
 
@@ -410,10 +442,10 @@ export default function TransactionLogPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
             {syncProgress && <span className="text-xs font-bold text-indigo-600 animate-pulse bg-indigo-50 px-2 py-1 rounded-lg border border-indigo-100">{syncProgress}</span>}
-            <button onClick={fetchData} disabled={loading} className="px-3 py-2 bg-white border border-slate-300 text-slate-600 rounded-lg text-xs md:text-sm font-bold shadow-sm hover:bg-slate-50 transition-colors flex items-center gap-1.5 disabled:opacity-50">
+            <button onClick={fetchData} disabled={loading || actionLoading} className="px-3 py-2 bg-white border border-slate-300 text-slate-600 rounded-lg text-xs md:text-sm font-bold shadow-sm hover:bg-slate-50 transition-colors flex items-center gap-1.5 disabled:opacity-50">
                 <RefreshCw size={14} className={loading ? "animate-spin text-indigo-500" : ""} /> Sync
             </button>
-            <button onClick={handleExport} disabled={loading} className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs md:text-sm font-bold shadow-md hover:bg-emerald-700 transition-colors flex items-center gap-1.5 disabled:opacity-50">
+            <button onClick={handleExport} disabled={loading || actionLoading} className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs md:text-sm font-bold shadow-md hover:bg-emerald-700 transition-colors flex items-center gap-1.5 disabled:opacity-50">
                 <Download size={14}/> Export Excel
             </button>
         </div>
@@ -697,6 +729,78 @@ export default function TransactionLogPage() {
               </div>
           </div>
       )}
+
+      {/* ======================================================= */}
+      {/* 🗺️ MODAL: PRODUCT JOURNEY */}
+      {/* ======================================================= */}
+      {journeyModal && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+                  <div className="p-5 border-b bg-indigo-50 flex justify-between items-center">
+                      <div>
+                          <h3 className="font-bold text-indigo-900 text-lg flex items-center gap-2"><GitBranch size={20}/> Product Journey Timeline</h3>
+                          <div className="flex items-center gap-2 mt-1">
+                              <span className="bg-white border border-indigo-200 text-indigo-700 text-[10px] font-mono px-2 py-0.5 rounded font-bold">{journeyModal.product_id}</span>
+                              <span className="text-sm font-bold text-indigo-800">{journeyModal.product_name}</span>
+                          </div>
+                      </div>
+                      <button onClick={()=>setJourneyModal(null)} className="text-indigo-400 hover:text-rose-500 p-2 bg-white rounded-full shadow-sm"><X size={20}/></button>
+                  </div>
+
+                  <div className="flex-1 overflow-auto p-6 bg-slate-50 custom-scrollbar">
+                      {journeyLoading ? (
+                          <div className="flex flex-col items-center justify-center h-40 text-indigo-500"><Activity className="animate-spin mb-2"/><span className="text-sm font-bold tracking-widest">Tracing Data...</span></div>
+                      ) : (
+                          <div className="relative border-l-2 border-indigo-200 ml-4 space-y-6 pb-4">
+                              {journeyData.map((j, i) => {
+                                  const isOut = j.transaction_type.includes('OUT');
+                                  const isIn = j.transaction_type === 'INBOUND';
+                                  const bName = branchMap[j.branch_id] || j.branch_id;
+                                  
+                                  return (
+                                  <div key={i} className="relative pl-6 group">
+                                      <div className={`absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-white ${isIn ? 'bg-emerald-500' : isOut ? 'bg-rose-500' : 'bg-amber-500'} shadow-sm group-hover:scale-125 transition-transform`}></div>
+                                      
+                                      <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm hover:shadow-md transition-shadow">
+                                          <div className="flex justify-between items-start mb-2">
+                                              <div className="flex items-center gap-2">
+                                                  <span className={`text-[10px] font-black px-2 py-0.5 rounded uppercase ${isIn ? 'bg-emerald-100 text-emerald-700' : isOut ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                      {j.transaction_type}
+                                                  </span>
+                                                  {j.metadata?.is_edited && <span className="text-[8px] bg-amber-100 text-amber-700 px-1 py-0.5 rounded font-bold border border-amber-200">EDITED</span>}
+                                                  <span className="text-xs text-slate-400 flex items-center gap-1 font-mono"><Clock size={12}/> {new Date(j.transaction_date).toLocaleString('th-TH')}</span>
+                                              </div>
+                                              <div className={`font-black text-lg ${Number(j.quantity_change) > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                                  {Number(j.quantity_change) > 0 ? '+' : ''}{j.quantity_change}
+                                              </div>
+                                          </div>
+                                          
+                                          <div className="text-sm text-slate-700 font-medium mb-2">
+                                              {isIn ? "รับสินค้าเข้าคลัง" : isOut ? `จัดส่งไปยังสาขา: ${bName || 'ไม่ระบุ'}` : "ปรับปรุงยอดสต๊อก / Cycle Count"}
+                                          </div>
+
+                                          <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-100 border-dashed">
+                                              <div className="text-[10px] text-slate-400 truncate max-w-[250px]" title={j.remarks}>
+                                                  📝 {j.remarks || 'ไม่มีหมายเหตุ'}
+                                              </div>
+                                              <div className="text-xs font-bold text-slate-800 bg-slate-100 px-2 py-1 rounded-lg">
+                                                  Balance: {j.balance_after}
+                                              </div>
+                                          </div>
+                                      </div>
+                                  </div>
+                              )})}
+                              <div className="relative pl-6">
+                                  <div className="absolute -left-[7px] top-1 w-3 h-3 bg-slate-300 rounded-full border-2 border-white"></div>
+                                  <div className="text-xs font-bold text-slate-400">จุดเริ่มต้นการบันทึกประวัติ (End of History)</div>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+              </div>
+          </div>
+      )}
+
     </div>
   );
 }

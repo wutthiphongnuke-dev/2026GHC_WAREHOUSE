@@ -138,7 +138,7 @@ export default function SmallwareCatalog() {
                       <div className="p-2 md:p-2.5 bg-gradient-to-br from-amber-400 to-orange-500 text-white rounded-xl md:rounded-2xl shadow-lg shadow-orange-200">
                           <ImageIcon size={20} className="md:w-6 md:h-6"/>
                       </div>
-                      Visual Catalog
+                      Warehouse Catalog
                   </h1>
               </div>
               
@@ -147,8 +147,8 @@ export default function SmallwareCatalog() {
                       className="px-3 py-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 bg-white text-xs md:text-sm font-bold text-slate-700 shadow-sm cursor-pointer"
                       value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
                   >
-                      <option value="ALL">ทุกโซน (All Zones)</option>
-                      {categories.map(cat => <option key={cat} value={cat}>Zone: {cat}</option>)}
+                      <option value="ALL">ทุกโซน (Zones)</option>
+                      {categories.map(cat => <option key={cat} value={cat}>GHC: {cat}</option>)}
                   </select>
                   <div className="relative w-full sm:w-64">
                       <Search className="absolute left-3 top-2.5 text-slate-400" size={16}/>
