@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '../../supabaseClient'; 
-import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History, AlertTriangle, Printer, Filter, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, Search, FileUp, FileDown, Truck, Calendar, Thermometer, MapPin, Package, ArrowRight, Box, Edit2, Clock, Archive, CheckCircle, AlertCircle, X, User, History, AlertTriangle, Printer, Filter, ChevronDown, Save } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface FormDataState {
@@ -53,6 +53,10 @@ const Inbound = () => {
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [exportStart, setExportStart] = useState<string>(todayStr);
   const [exportEnd, setExportEnd] = useState<string>(todayStr);
+
+  // 🟢 State สำหรับหน้าแก้ไข PO
+  const [showEditPOModal, setShowEditPOModal] = useState<boolean>(false);
+  const [editPOData, setEditPOData] = useState({ vendor_id: '', delivery_date: '' });
 
   useEffect(() => {
     const fetchRole = async () => {
@@ -158,7 +162,6 @@ const Inbound = () => {
     } catch (error: any) { console.error("Error fetching master data:", error); } 
   };
 
-  // 🚀 1. ฟังก์ชันนำเข้า PO (กันซ้ำ 100% + สร้าง Vendor อัตโนมัติกันบั๊ก FK)
   const handleImportPO = (event: any) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -175,7 +178,7 @@ const Inbound = () => {
             if (rows.length === 0) throw new Error("ไฟล์ว่างเปล่า (File Empty!)");
 
             const groupedPOs: Record<string, any> = {};
-            const incomingVendors = new Set<string>(); // เก็บรายชื่อ Vendor ทั้งหมดเพื่อเช็ค
+            const incomingVendors = new Set<string>();
 
             rows.forEach((row: any) => {
                 const rawPo = row['Purchase order'];
@@ -188,7 +191,9 @@ const Inbound = () => {
                 const cleanPoNo = String(rawPo || '').trim();
                 if (!cleanPoNo) return; 
                 
-                // ถ้ารหัส Vendor ในไฟล์ว่างเปล่า ให้ใส่ค่า Default
+                const cleanItem = String(rawItem || '').trim();
+                if (!cleanItem) return;
+
                 const cleanVendor = String(rawVendor || '').trim() || 'UNKNOWN_VENDOR';
                 incomingVendors.add(cleanVendor);
                 
@@ -213,47 +218,80 @@ const Inbound = () => {
                         delivery_date: finalDate, 
                         warehouse_code: String(rawWh || 'MAIN').trim(), 
                         status: 'PENDING',
-                        lines: []
+                        linesMap: {} 
                     };
                 }
                 
-                groupedPOs[cleanPoNo].lines.push({ 
-                    po_number: cleanPoNo,
-                    product_id: String(rawItem || '').trim(), 
-                    ordered_qty: parseFloat(rawQty) || 0, 
-                    received_qty: 0 
-                });
+                const qty = parseFloat(rawQty) || 0;
+
+                if (groupedPOs[cleanPoNo].linesMap[cleanItem]) {
+                    groupedPOs[cleanPoNo].linesMap[cleanItem].ordered_qty += qty;
+                } else {
+                    groupedPOs[cleanPoNo].linesMap[cleanItem] = { 
+                        po_number: cleanPoNo,
+                        product_id: cleanItem, 
+                        ordered_qty: qty, 
+                        received_qty: 0 
+                    };
+                }
             });
 
             const incomingPoNumbers = Object.keys(groupedPOs);
 
-            // 🟢 STEP 1: ตรวจสอบ PO ซ้ำ (บล็อกการรับเข้าซ้ำเด็ดขาด)
             const { data: existingPOs, error: checkErr } = await supabase
                 .from('purchase_orders')
-                .select('po_number')
+                .select('po_number, status, po_lines(product_id)')
                 .in('po_number', incomingPoNumbers);
 
-            if (checkErr) throw new Error("เช็ค PO ซ้ำล้มเหลว: " + checkErr.message);
+            if (checkErr) throw new Error("เช็ค PO ล้มเหลว: " + checkErr.message);
 
-            const existingPoSet = new Set(existingPOs?.map(p => p.po_number) || []);
-            const duplicatedPOs = [];
-            const newPOs = [];
+            const existingPoMap = new Map();
+            existingPOs?.forEach(po => existingPoMap.set(po.po_number, po));
+
+            const poDataToInsert: any[] = [];
+            const poLinesToInsert: any[] = [];
+            const poToUpdateToPartial: string[] = [];
+
+            let countNewPOs = 0;
+            let countAppendedLines = 0;
+            let countSkippedLines = 0;
 
             for (const poNo of incomingPoNumbers) {
-                if (existingPoSet.has(poNo)) {
-                    duplicatedPOs.push(poNo); // ดัก PO ซ้ำ
+                const incomingData = groupedPOs[poNo];
+                const incomingLines = Object.values(incomingData.linesMap) as any[];
+                delete incomingData.linesMap;
+
+                if (!existingPoMap.has(poNo)) {
+                    poDataToInsert.push(incomingData);
+                    poLinesToInsert.push(...incomingLines);
+                    countNewPOs++;
                 } else {
-                    newPOs.push(poNo); // PO ใหม่ที่ผ่านการคัดกรอง
+                    const existingPO = existingPoMap.get(poNo);
+                    const existingProductIds = new Set((existingPO.po_lines || []).map((l: any) => l.product_id));
+                    let hasNewItemInExistingPo = false;
+
+                    for (const line of incomingLines) {
+                        if (!existingProductIds.has(line.product_id)) {
+                            poLinesToInsert.push(line);
+                            countAppendedLines++;
+                            hasNewItemInExistingPo = true;
+                        } else {
+                            countSkippedLines++;
+                        }
+                    }
+
+                    if (hasNewItemInExistingPo && existingPO.status === 'COMPLETED') {
+                        poToUpdateToPartial.push(poNo);
+                    }
                 }
             }
 
-            if (newPOs.length === 0) {
-                alert(`⚠️ บล็อกการนำเข้าสำเร็จ!\n\nข้อมูลในไฟล์ทั้งหมด (${duplicatedPOs.length} บิล) มีอยู่ในระบบแล้ว ระบบทำการข้าม (Skip) เพื่อป้องกันการรับของซ้ำซ้อนครับ`);
+            if (poDataToInsert.length === 0 && poLinesToInsert.length === 0) {
+                alert(`⚠️ ไม่มีข้อมูลใหม่ให้ทำรายการ!\n\nข้อมูลในไฟล์ทั้งหมดมีอยู่ในระบบแล้ว (ระบบทำการข้ามไป ${countSkippedLines} รายการเพื่อป้องกันยอดซ้ำซ้อน)`);
                 setLoading(false);
                 return;
             }
 
-            // 🟢 STEP 2: ตรวจสอบและสร้าง Vendor อัตโนมัติ (แก้บั๊ก FK Constraint)
             const uniqueIncomingVendors = Array.from(incomingVendors);
             if (uniqueIncomingVendors.length > 0) {
                 const { data: existingVendors, error: vCheckErr } = await supabase
@@ -266,7 +304,6 @@ const Inbound = () => {
                 const existingVendorSet = new Set(existingVendors?.map(v => v.vendor_id) || []);
                 const missingVendors = uniqueIncomingVendors.filter(v => !existingVendorSet.has(v));
 
-                // ถ้ามี Vendor หน้าใหม่ ให้สร้างใส่ Database ให้ก่อนเลย
                 if (missingVendors.length > 0) {
                     const vendorsToInsert = missingVendors.map(v => ({
                         vendor_id: v,
@@ -279,40 +316,33 @@ const Inbound = () => {
                         
                     if (vInsertErr) throw new Error("สร้าง Vendor อัตโนมัติล้มเหลว: " + vInsertErr.message);
                     
-                    fetchMasterData(); // สั่งอัปเดต state ตัว Vendor ใหม่
+                    fetchMasterData(); 
                 }
-            }
-
-            // 🟢 STEP 3: นำเข้าเฉพาะใบ PO อันใหม่เข้า Database
-            const poDataToInsert: any[] = [];
-            const poLinesToInsert: any[] = [];
-
-            for (const poNo of newPOs) {
-                const poData = groupedPOs[poNo];
-                const poLinesData = poData.lines;
-                delete poData.lines;
-
-                poDataToInsert.push(poData);
-                poLinesToInsert.push(...poLinesData); 
             }
 
             if (poDataToInsert.length > 0) {
                 const { error: poInsertErr } = await supabase.from('purchase_orders').insert(poDataToInsert);
                 if (poInsertErr) throw new Error("PO Insert Error: " + poInsertErr.message);
+            }
 
-                if (poLinesToInsert.length > 0) {
-                    const { error: linesInsertErr } = await supabase.from('po_lines').insert(poLinesToInsert);
-                    if (linesInsertErr) throw new Error("PO Lines Insert Error: " + linesInsertErr.message);
-                }
+            if (poLinesToInsert.length > 0) {
+                const { error: linesInsertErr } = await supabase.from('po_lines').insert(poLinesToInsert);
+                if (linesInsertErr) throw new Error("PO Lines Insert Error: " + linesInsertErr.message);
+            }
+
+            if (poToUpdateToPartial.length > 0) {
+                const { error: poUpdateErr } = await supabase.from('purchase_orders')
+                    .update({ status: 'PARTIAL' })
+                    .in('po_number', poToUpdateToPartial);
+                if (poUpdateErr) throw new Error("PO Update Error: " + poUpdateErr.message);
             }
             
-            // 🟢 สรุปผลลัพธ์การทำงานให้ User ดู
-            let alertMsg = `✅ นำเข้า PO ใหม่สำเร็จจำนวน: ${newPOs.length} เอกสาร\n`;
-            if (duplicatedPOs.length > 0) {
-                alertMsg += `\n⚠️ บล็อก PO ซ้ำที่มีอยู่แล้ว: ${duplicatedPOs.length} เอกสาร (ระบบข้ามการทำงานให้ปลอดภัย)`;
-            }
+            let alertMsg = `✅ อัปเดตข้อมูล PO สำเร็จ!\n`;
+            if (countNewPOs > 0) alertMsg += `- สร้าง PO ใหม่เอี่ยม: ${countNewPOs} เอกสาร\n`;
+            if (countAppendedLines > 0) alertMsg += `- แทรก Item ใหม่เข้า PO เดิม: ${countAppendedLines} รายการ\n`;
+            if (countSkippedLines > 0) alertMsg += `\n⚠️ ข้าม Item ที่มีอยู่แล้ว (หรือซ้ำกัน): ${countSkippedLines} รายการ (ป้องกันยอดซ้ำ)`;
+            
             alert(alertMsg);
-
             fetchPendingPOs(); 
             
         } catch (error: any) { alert("🚨 เกิดข้อผิดพลาดในการทำงาน:\n\n" + error.message); }
@@ -382,6 +412,46 @@ const Inbound = () => {
         setShowExportModal(false);
     } catch (error: any) {
         alert("Export Error: " + error.message);
+    }
+    setLoading(false);
+  };
+
+  // 🟢 ฟังก์ชันบันทึกการแก้ไข PO
+  const handleSaveEditedPO = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPO) return;
+    setLoading(true);
+    try {
+        const { error } = await supabase
+            .from('purchase_orders')
+            .update({
+                vendor_id: editPOData.vendor_id,
+                delivery_date: editPOData.delivery_date
+            })
+            .eq('po_number', selectedPO.po_number);
+            
+        if (error) throw error;
+
+        alert("✅ แก้ไขข้อมูล PO สำเร็จ!");
+        setShowEditPOModal(false);
+        fetchPendingPOs();
+        
+        // อัปเดตข้อมูลบนหน้าจอทันที
+        const vendorObj = vendors.find(v => v.vendor_id === editPOData.vendor_id);
+        setFormData(prev => ({
+            ...prev,
+            vendorId: editPOData.vendor_id,
+            vendorName: vendorObj ? vendorObj.vendor_name : editPOData.vendor_id
+        }));
+        setSelectedPO({
+            ...selectedPO,
+            vendor_id: editPOData.vendor_id,
+            delivery_date: editPOData.delivery_date,
+            vendor_full_name: vendorObj ? vendorObj.vendor_name : editPOData.vendor_id
+        });
+
+    } catch (error: any) {
+        alert("Error: " + error.message);
     }
     setLoading(false);
   };
@@ -523,11 +593,8 @@ const Inbound = () => {
     await new Promise(resolve => setTimeout(resolve, 10));
 
     try {
-        // 🟢 แก้ปัญหา Foreign Key Error ของตาราง inbound_receipts
-        // ถ้าเป็นโหมด 'manual' ห้ามส่งค่า formData.refPO ไปลง column po_number เด็ดขาด (ส่งเป็น null แทน)
         const actualPoNumber = (activeTab === 'po' && selectedPO) ? selectedPO.po_number : null;
 
-        // บันทึกใบรับเข้าลงตาราง inbound_receipts
         const { data: receiptData, error: receiptError } = await supabase
             .from('inbound_receipts')
             .insert([{
@@ -616,7 +683,6 @@ const Inbound = () => {
             
             let thaiTimingStatus = deliveryTiming === 'LATE' ? 'ล่าช้า' : (deliveryTiming === 'EARLY' ? 'มาก่อนกำหนด' : 'ตรงเวลา');
 
-            // ฝัง Metadata PO ลงใน Transactions_log (ไม่ต้องมีในระบบ PO จริงๆ ก็เก็บค่า String ได้)
             logsToInsert.push({
                 transaction_type: 'INBOUND',
                 product_id: item.productId,
@@ -856,14 +922,26 @@ const Inbound = () => {
         {/* --- RIGHT PANEL --- */}
         <div className="flex-1 flex flex-col bg-slate-50 overflow-hidden min-h-[50vh]">
             <div className="bg-white p-3 md:p-4 border-b border-slate-200 shadow-sm flex flex-col md:flex-row md:justify-between md:items-start shrink-0 gap-3">
-                 <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 w-full">
+                 <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 w-full relative">
+                    
                     <div className="col-span-1 lg:border-r border-slate-100">
                         <label className="text-[9px] md:text-[10px] uppercase font-bold text-slate-400">Doc No.</label>
                         <div className="font-mono font-bold text-slate-800 text-sm md:text-lg">{formData.docNo}</div>
                     </div>
                     
-                    <div className="col-span-1 lg:border-r border-slate-100">
-                        <label className="text-[9px] md:text-[10px] uppercase font-bold text-slate-400">PO Number</label>
+                    <div className="col-span-1 lg:border-r border-slate-100 relative group">
+                        <label className="text-[9px] md:text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1">
+                            PO Number
+                            {/* 🟢 ปุ่มดินสอแก้ไขข้อมูล PO เด้งขึ้นมาเมื่อชี้ */}
+                            {activeTab === 'po' && selectedPO && !isViewer && (
+                                <button onClick={() => {
+                                    setEditPOData({ vendor_id: selectedPO.vendor_id, delivery_date: selectedPO.delivery_date });
+                                    setShowEditPOModal(true);
+                                }} className="text-blue-500 hover:text-blue-700 bg-blue-50 p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <Edit2 size={12}/>
+                                </button>
+                            )}
+                        </label>
                         <input 
                             type="text" 
                             className="w-full font-bold text-xs md:text-sm border-none focus:ring-0 p-0 text-slate-800 placeholder-slate-300 bg-transparent outline-none disabled:bg-transparent"
@@ -915,7 +993,6 @@ const Inbound = () => {
                  )}
             </div>
 
-            {/* แถบค้นหาภายในตะกร้า (Cart Search) */}
             {cart.length > 0 && (
                 <div className="px-2 md:px-4 pt-3 pb-1 shrink-0 bg-slate-50">
                     <div className="relative">
@@ -1028,6 +1105,7 @@ const Inbound = () => {
         </div>
       </div>
 
+      {/* 🟢 หน้าต่าง Modal สำหรับส่งออก Excel (ของเดิม) */}
       {showExportModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden flex flex-col">
@@ -1057,6 +1135,55 @@ const Inbound = () => {
             </div>
         </div>
       )}
+
+      {/* 🟢 หน้าต่าง Modal สำหรับแก้ไขข้อมูล PO (เพิ่มใหม่) */}
+      {showEditPOModal && selectedPO && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col">
+                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-blue-50">
+                    <h3 className="font-bold text-blue-800 flex items-center gap-2">
+                        <Edit2 size={18} className="text-blue-600"/> 
+                        แก้ไขข้อมูล PO: {selectedPO.po_number}
+                    </h3>
+                    <button onClick={() => setShowEditPOModal(false)} className="text-blue-400 hover:text-red-500 transition-colors"><X size={20}/></button>
+                </div>
+                <form onSubmit={handleSaveEditedPO}>
+                    <div className="p-6 flex flex-col gap-5">
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">วันที่คาดว่าจะส่ง (Delivery Date)</label>
+                            <input 
+                                type="date" 
+                                required
+                                className="w-full p-2.5 border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-500 transition-colors font-bold text-slate-700" 
+                                value={editPOData.delivery_date} 
+                                onChange={e => setEditPOData({...editPOData, delivery_date: e.target.value})} 
+                            />
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">ผู้จัดจำหน่าย (Vendor)</label>
+                            <select 
+                                required
+                                className="w-full p-2.5 border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-500 transition-colors font-bold text-slate-700"
+                                value={editPOData.vendor_id}
+                                onChange={e => setEditPOData({...editPOData, vendor_id: e.target.value})}
+                            >
+                                {vendors.map(v => (
+                                    <option key={v.vendor_id} value={v.vendor_id}>{v.vendor_id} : {v.vendor_name}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                    <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+                        <button type="button" onClick={() => setShowEditPOModal(false)} className="px-4 py-2 text-slate-500 font-bold hover:bg-slate-200 rounded-xl transition-colors">ยกเลิก</button>
+                        <button type="submit" disabled={loading} className="px-6 py-2 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 shadow-md shadow-blue-200 transition-all flex items-center gap-2">
+                            {loading ? 'กำลังบันทึก...' : <><Save size={16}/> บันทึกการแก้ไข</>}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+      )}
+
     </div>
   );
 };

@@ -6,7 +6,7 @@ import {
     Calendar as CalIcon, Save, Search, Package, TrendingUp, TrendingDown, 
     Minus, X, Filter, BarChart2, Zap, BrainCircuit, Activity, CheckCircle, 
     ShoppingCart, ArrowRight, MapPin, ChevronLeft, ChevronRight, Download, 
-    FileSpreadsheet, Flame, Wand2, Settings, AlertTriangle, Plus, Trash2, RefreshCw, Truck, Sparkles, Users
+    FileSpreadsheet, Flame, Wand2, Settings, AlertTriangle, Plus, Trash2, RefreshCw, Truck, Sparkles, Users, Clock
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -34,6 +34,8 @@ export default function PlanningPage() {
   const [pendingPOs, setPendingPOs] = useState<any[]>([]);
   const [plannedOrders, setPlannedOrders] = useState<any[]>([]);
 
+  const [latePOs, setLatePOs] = useState<any[]>([]);
+
   const [manageSearch, setManageSearch] = useState('');
   const [manageLocation, setManageLocation] = useState('ALL');
   const [manageCategory, setManageCategory] = useState('ALL');
@@ -46,7 +48,6 @@ export default function PlanningPage() {
   const [searchTerm, setSearchTerm] = useState('');
   
   const [baseAvgPeriod, setBaseAvgPeriod] = useState<number>(30); 
-  // 🟢 เพิ่ม HOLT_WINTERS ลงในประเภทของ AI Forecast
   const [forecastStrategy, setForecastStrategy] = useState<'MA' | 'TREND' | 'PEAK' | 'ARIMA' | 'HOLT_WINTERS'>('HOLT_WINTERS'); 
   const [demandFactor, setDemandFactor] = useState<number>(1.0); 
 
@@ -98,7 +99,7 @@ export default function PlanningPage() {
         const [pRes, iRes, poHeadRes, poLineRes, planRes, vRes] = await Promise.all([
             supabase.from('master_products').select('*'),
             supabase.from('inventory_lots').select('product_id, quantity'),
-            supabase.from('purchase_orders').select('po_number, delivery_date').in('status', ['PENDING', 'PARTIAL']),
+            supabase.from('purchase_orders').select('po_number, delivery_date, vendor_id').in('status', ['PENDING', 'PARTIAL']),
             supabase.from('po_lines').select('*'),
             supabase.from('planning_orders').select('*').gte('plan_date', startOfMonth).lte('plan_date', endOfMonth),
             supabase.from('master_vendors').select('vendor_id, vendor_name')
@@ -113,16 +114,33 @@ export default function PlanningPage() {
         const poIncomingList: any[] = [];
         const poPendingSumMap: Record<string, number> = {};
         
+        const todayStr = new Date().toISOString().split('T')[0];
+        const overduePOs = new Map<string, any>();
+
         if (poHeadRes.data && poLineRes.data) {
             poLineRes.data.forEach((line: any) => {
                 const header = poHeadRes.data.find((h:any) => h.po_number === line.po_number);
                 const pendingQty = Number(line.ordered_qty) - Number(line.received_qty);
                 if (pendingQty > 0 && header?.delivery_date) {
-                    poIncomingList.push({ product_id: line.product_id, qty: pendingQty, date: header.delivery_date });
+                    poIncomingList.push({ 
+                        product_id: line.product_id, 
+                        qty: pendingQty, 
+                        date: header.delivery_date,
+                        po_number: header.po_number
+                    });
                     poPendingSumMap[line.product_id] = (poPendingSumMap[line.product_id] || 0) + pendingQty;
+                    
+                    if (header.delivery_date < todayStr) {
+                        overduePOs.set(header.po_number, { 
+                            po_number: header.po_number, 
+                            date: header.delivery_date,
+                            vendor_name: vendorMap[header.vendor_id] || header.vendor_id
+                        });
+                    }
                 }
             });
             setPendingPOs(poIncomingList);
+            setLatePOs(Array.from(overduePOs.values()).sort((a,b) => a.date.localeCompare(b.date)));
         }
 
         const safeProducts = (pRes.data || []).map(p => ({
@@ -251,12 +269,12 @@ export default function PlanningPage() {
       setLoading(false);
   };
 
-  // ==================== PART 2: ADVANCED FORECASTING LOGIC (INCLUDING HOLT-WINTERS) ====================
   const getProductForecast = (product: any) => {
       const pid = product.product_id;
       let runningStock = Math.max(0, product.current_qty); 
       
       const today = new Date(); today.setHours(0,0,0,0);
+      const todayStr = today.toISOString().split('T')[0];
       const [year, month] = selectedMonth.split('-');
       const planStart = new Date(Number(year), Number(month) - 1, 1);
       const daysInMonth = new Date(Number(year), Number(month), 0).getDate();
@@ -270,8 +288,6 @@ export default function PlanningPage() {
       const dBase = new Date(today); dBase.setDate(dBase.getDate() - baseAvgPeriod + 1);
       const d7 = new Date(today); d7.setDate(d7.getDate() - 7 + 1);
 
-      // 🟢 การสร้าง Map วันที่แบบย้อนกลับให้เรียงตาม Chronological Order (เก่าสุด ไปหา ใหม่สุด)
-      // สำคัญมากสำหรับ Holt-Winters เพราะต้องใช้ข้อมูลเรียงตามเวลา
       for (let i = baseAvgPeriod - 1; i >= 0; i--) {
           const tempD = new Date(today);
           tempD.setDate(tempD.getDate() - i);
@@ -315,15 +331,13 @@ export default function PlanningPage() {
       let hwForecast: number[] = [];
       let hwAvgDemand = avgBase;
 
-      // 🟢 Holt-Winters Algorithm (Additive Seasonality)
       if (forecastStrategy === 'HOLT_WINTERS') {
           const y = dailyValues;
           const N = y.length;
-          const L = 7; // คาบฤดูกาลรายสัปดาห์ (Weekly Seasonality = 7 Days)
+          const L = 7; 
           
-          // ต้องมีข้อมูลอย่างน้อย 2 รอบฤดูกาล (14 วัน) ถึงจะพยากรณ์ Holt-Winters ได้
           if (N >= 14) {
-              const alpha = 0.3, beta = 0.1, gamma = 0.2; // พารามิเตอร์น้ำหนักความสำคัญ
+              const alpha = 0.3, beta = 0.1, gamma = 0.2; 
               let l = y.slice(0, L).reduce((a,b)=>a+b,0)/L;
               let b = 0;
               for(let i=0; i<L; i++) b += (y[i+L] - y[i])/L;
@@ -339,16 +353,15 @@ export default function PlanningPage() {
               }
 
               let sumHw = 0;
-              for(let k=1; k<=60; k++) { // คาดการณ์ล่วงหน้า 60 วัน
+              for(let k=1; k<=60; k++) { 
                   let forecast = l + k*b + s[(N-1 + k)%L];
-                  forecast = Math.max(0, forecast); // ไม่ยอมให้ยอดติดลบ
+                  forecast = Math.max(0, forecast); 
                   hwForecast.push(forecast);
                   if(k<=7) sumHw += forecast;
               }
               hwAvgDemand = sumHw / 7;
               baseDemand = hwAvgDemand;
           } else {
-              // ถ้าข้อมูลไม่พอ ให้ถอยกลับมาใช้ค่าเฉลี่ยปกติ
               baseDemand = avgBase;
               hwForecast = Array(60).fill(avgBase);
           }
@@ -362,9 +375,14 @@ export default function PlanningPage() {
 
       let appliedDemand = baseDemand * demandFactor;
       const hasDataInPeriod = totalBasePeriod > 0;
+      const variancePercent = avgBase > 0 ? ((appliedDemand - avgBase) / avgBase) * 100 : 0;
 
-      const incomingMap: Record<string, number> = {};
-      pendingPOs.filter(po => po.product_id === pid).forEach(po => { incomingMap[po.date] = (incomingMap[po.date] || 0) + po.qty; });
+      const incomingMap: Record<string, { qty: number, pos: string[] }> = {};
+      pendingPOs.filter(po => po.product_id === pid).forEach(po => { 
+          if (!incomingMap[po.date]) incomingMap[po.date] = { qty: 0, pos: [] };
+          incomingMap[po.date].qty += po.qty; 
+          if (!incomingMap[po.date].pos.includes(po.po_number)) incomingMap[po.date].pos.push(po.po_number);
+      });
 
       const manualPlanMap: Record<string, any> = {};
       plannedOrders.filter(plan => plan.product_id === pid).forEach(plan => { 
@@ -390,47 +408,56 @@ export default function PlanningPage() {
           bucketDate.setDate(bucketDate.getDate() + i);
           const bucketDateStr = bucketDate.toISOString().split('T')[0];
 
-          let daysFromToday = Math.floor((bucketDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-          
-          let currentDayDemand = appliedDemand;
-          if (forecastStrategy === 'HOLT_WINTERS') {
-              if (daysFromToday >= 0 && daysFromToday < hwForecast.length) {
-                  currentDayDemand = hwForecast[daysFromToday] * demandFactor;
-              } else if (daysFromToday >= 0) {
-                  currentDayDemand = hwAvgDemand * demandFactor;
+          const isPast = bucketDateStr < todayStr;
+          let currentDayDemand = 0;
+
+          if (isPast) {
+              currentDayDemand = txs.find(t => t.date === bucketDateStr)?.qty || 0; 
+          } else {
+              let daysFromToday = Math.floor((bucketDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+              if (forecastStrategy === 'HOLT_WINTERS') {
+                  if (daysFromToday >= 0 && daysFromToday < hwForecast.length) {
+                      currentDayDemand = hwForecast[daysFromToday] * demandFactor;
+                  } else {
+                      currentDayDemand = hwAvgDemand * demandFactor;
+                  }
               } else {
-                  currentDayDemand = 0; // อดีตไม่ต้องหักลบซ้ำ
+                  currentDayDemand = appliedDemand;
               }
           }
           
-          let bucketIncomingPO = incomingMap[bucketDateStr] || 0;
+          let bucketIncomingInfo = incomingMap[bucketDateStr];
+          let bucketIncomingPO = bucketIncomingInfo ? bucketIncomingInfo.qty : 0;
+          let bucketPONumbers = bucketIncomingInfo ? bucketIncomingInfo.pos.join(', ') : '';
+          
           let plannedBase = manualPlanMap[bucketDateStr]?.baseQty || 0;
           let plannedPurchase = manualPlanMap[bucketDateStr]?.purchaseQty || 0;
 
-          let calculatedStock = runningStock - currentDayDemand + bucketIncomingPO + plannedBase;
-          let isShortage = false;
-
-          if (calculatedStock < 0) {
-              calculatedStock = 0;
-              isShortage = true; 
+          // 🟢 แก้ไข TypeScript Error: บังคับให้เป็น Number ตลอดสาย
+          let calculatedStock = runningStock;
+          if (!isPast) {
+              calculatedStock = runningStock - currentDayDemand + bucketIncomingPO + plannedBase;
+              if (calculatedStock < 0) calculatedStock = 0;
+              runningStock = calculatedStock; 
           }
-
-          runningStock = calculatedStock; 
 
           timeline.push({
               dateObj: bucketDate,
               dateStr: bucketDateStr,
               label: bucketDate.toLocaleDateString('en-GB', {day:'2-digit', month:'short'}),
               demand: currentDayDemand,
+              isPast: isPast,
               incomingPO: bucketIncomingPO,
+              poNumbers: bucketPONumbers, 
+              isLatePO: bucketIncomingPO > 0 && isPast,
               plannedBase,
               plannedPurchase,
-              projectedStock: calculatedStock,
-              isShortage: isShortage
+              projectedStock: calculatedStock, // ส่งออกเป็น Number แท้ๆ เสมอ
+              isShortage: !isPast && calculatedStock <= 0
           });
       }
 
-      return { avgBase, stdDev, appliedDemand, trend, trendPercent, maxDaily, timeline, hasDataInPeriod, baseAvgPeriod };
+      return { avgBase, stdDev, appliedDemand, trend, trendPercent, variancePercent, maxDaily, timeline, hasDataInPeriod, baseAvgPeriod };
   };
 
   const handleSavePlan = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -477,6 +504,7 @@ export default function PlanningPage() {
       setLoading(false);
   };
 
+  // 🟢 แก้ไข TypeScript Error ในฟังก์ชัน AutoPlan
   const handleAutoPlan = async () => {
       if (isViewer) return alert("ไม่มีสิทธิ์ทำรายการ");
       if (!window.confirm(`✨ ระบบจะคำนวณและเติมแผนสั่งซื้อให้อัตโนมัติ (เฉพาะห้อง ${activeRoom.label} ในสัปดาห์ที่เลือก)\n\nระบบจะสั่งของใน "วันแรก" ที่คาดการณ์ว่าสต๊อกจะต่ำกว่าจุดสั่งซื้อ ยืนยันหรือไม่?`)) return;
@@ -492,9 +520,11 @@ export default function PlanningPage() {
 
               timelineHeaders.forEach(head => {
                   const dayData = forecast.timeline.find(t => t.dateStr === head.dateStr);
-                  if (dayData && !hasPlannedForThisProduct) {
+                  
+                  if (dayData && !dayData.isPast && !hasPlannedForThisProduct) {
                       const safetyStockLevel = p.min_stock + (forecast.appliedDemand * p.lead_time);
                       
+                      // 🟢 dayData.projectedStock เป็น Number แท้แล้ว เลยคำนวณได้โดยไม่เกิด Error 2363
                       if (dayData.projectedStock <= p.min_stock) {
                           const shortage = safetyStockLevel - dayData.projectedStock;
                           if (shortage > 0) {
@@ -538,7 +568,7 @@ export default function PlanningPage() {
 
       if (plansToConvert.length === 0) return alert("ไม่มียอดแผนสั่งซื้อ (Purchase Qty) ที่สามารถแปลงเป็นเอกสาร PO ได้ในเดือนที่เลือก");
 
-      if (!window.confirm(`คุณกำลังจะแปลงแผนการสั่งซื้อของห้อง "${activeRoom.label}" เป็นใบสั่งซื้อ (PO) อัตโนมัติ\n\nระบบจะรวบรวมรายการและสร้างใบ PO แยกตามวันที่ให้ทันที ยืนยันหรือไม่?`)) return;
+      if (!window.confirm(`คุณกำลังจะแปลงแผนการสั่งซื้อของห้อง "${activeRoom.label}" เป็นใบสั่งซื้อ (PO) อัตโนมัติ\n\nระบบจะรวบรวมรายการและสร้างใบ PO แยกตามวันที่ให้ทันที ยืนยันหรือไม่?\n(ถ้าต้องการแก้ไขบิล PO ให้ไปจัดการที่หน้า Inbound)`)) return;
 
       setLoading(true);
       try {
@@ -567,7 +597,7 @@ export default function PlanningPage() {
               createdCount++;
           }
 
-          alert(`✅ สร้างใบสั่งซื้อ (PO) สำเร็จจำนวน ${createdCount} ใบ!\n(คุณสามารถไปแก้ไข/ระบุคู่ค้าได้ที่ตารางรับเข้า/PO)`);
+          alert(`✅ สร้างใบสั่งซื้อ (PO) สำเร็จจำนวน ${createdCount} ใบ!\n(คุณสามารถไปแก้ไขคู่ค้า หรือ เปลี่ยนวันส่งได้ที่หน้า รับเข้า/Inbound)`);
           fetchData();
       } catch (error: any) { alert("เกิดข้อผิดพลาดในการสร้าง PO: " + error.message); }
       setLoading(false);
@@ -596,14 +626,17 @@ export default function PlanningPage() {
               'ขั้นต่ำการสั่ง (MOQ)': p.moq,
               'หน่วยจ่าย': p.base_uom,
               'หน่วยสั่ง': p.purchase_uom,
-              'คาดการณ์ใช้/วัน': forecast.appliedDemand.toFixed(2),
+              // 🟢 ลบจุดทศนิยมออกให้หมดใน Excel Export
+              'ยอดใช้จริงเฉลี่ย/วัน': Math.round(forecast.avgBase),
+              'AI คาดการณ์ใช้/วัน': Math.round(forecast.appliedDemand),
           };
 
           timelineHeaders.forEach(head => {
               const dayData = forecast.timeline.find(t => t.dateStr === head.dateStr);
               if (dayData) {
                   row[`[Plan] ${head.label}`] = dayData.plannedPurchase > 0 ? `${dayData.plannedPurchase} ${p.purchase_uom}` : '-';
-                  row[`[Stock] ${head.label}`] = Math.round(dayData.projectedStock);
+                  // 🟢 ซ่อน Stock ในอดีตเป็น '-' เฉพาะตอน Render / Export
+                  row[`[Stock] ${head.label}`] = dayData.isPast ? '-' : Math.round(dayData.projectedStock);
                   
                   if (dayData.plannedPurchase > 0 && firstOrderDateStr === '9999-12-31') {
                       row['_firstOrderDate'] = head.dateStr;
@@ -682,8 +715,21 @@ export default function PlanningPage() {
   }, [selectedMonth]);
 
   return (
-    <div className="p-6 h-full bg-slate-50 flex flex-col font-sans overflow-hidden">
+    <div className="p-6 h-full bg-slate-50 flex flex-col font-sans overflow-hidden relative">
       
+      {/* 🔴 แบนเนอร์แจ้งเตือน PO ล่าช้า */}
+      {latePOs.length > 0 && activeTab === 'ANALYZE' && (
+          <div className="bg-rose-100 border border-rose-300 text-rose-800 px-4 py-3 rounded-xl mb-4 flex items-center justify-between shadow-sm animate-fade-in shrink-0">
+              <div className="flex items-center gap-2 font-bold text-sm">
+                  <AlertTriangle size={18} className="text-rose-600 animate-pulse"/>
+                  แจ้งเตือนด่วน: มีเอกสารสั่งซื้อ (PO) จำนวน {latePOs.length} ใบ ที่เลยกำหนดส่งแล้ว (Late Delivery) 
+              </div>
+              <a href="/inbound" className="text-xs bg-rose-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-rose-700 transition-colors flex items-center gap-1 shadow-md hover:shadow-lg">
+                  ไปที่หน้า Inbound เพื่อติดตามของ <ArrowRight size={14}/>
+              </a>
+          </div>
+      )}
+
       <div className="flex justify-between items-start mb-6 flex-shrink-0">
           <div>
               <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2"><CalIcon className="text-indigo-600"/> Smart Planning Center</h1>
@@ -894,7 +940,6 @@ export default function PlanningPage() {
 
                       <div className="flex items-center gap-2 bg-purple-50 px-3 py-1.5 rounded-xl border border-purple-200 shadow-sm">
                           <BrainCircuit size={16} className="text-purple-600"/>
-                          {/* 🟢 มีเมนูย่อย Holt-Winters ให้เลือกแล้ว */}
                           <select value={forecastStrategy} onChange={(e) => setForecastStrategy(e.target.value as any)} className="bg-transparent text-sm font-bold text-purple-900 outline-none cursor-pointer border-r border-purple-200 pr-2">
                               <option value="MA">Basic Avg (ค่าเฉลี่ยปกติ)</option>
                               <option value="TREND">Trend Mode (เน้นยอดล่าสุด)</option>
@@ -933,7 +978,7 @@ export default function PlanningPage() {
                       <thead className="bg-slate-100/90 backdrop-blur-md text-slate-600 font-bold text-xs uppercase sticky top-0 z-30 shadow-sm">
                           <tr>
                               <th className="p-3 pl-6 sticky left-0 bg-slate-100 z-40 border-r border-slate-200 w-80 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">Product Info</th>
-                              <th className="p-3 text-center w-28 bg-white border-r border-slate-200">
+                              <th className="p-3 text-center w-36 bg-white border-r border-slate-200">
                                   <div className="flex flex-col items-center">
                                       <span>{forecastStrategy === 'PEAK' ? 'Max/Day' : forecastStrategy === 'ARIMA' ? 'Adjusted/Day' : forecastStrategy === 'HOLT_WINTERS' ? 'HW Avg/Day' : 'Avg/Day'}</span>
                                       <span className="text-[9px] text-slate-400 font-medium tracking-widest mt-0.5">({baseAvgPeriod} Days)</span>
@@ -955,7 +1000,7 @@ export default function PlanningPage() {
                                   
                                   return (
                                       <tr key={p.product_id} className="hover:bg-slate-50 transition-colors group">
-                                          <td className="p-3 pl-6 sticky left-0 bg-white group-hover:bg-slate-50 z-20 border-r border-slate-100 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
+                                          <td className="p-3 pl-6 sticky left-0 bg-white group-hover:bg-slate-50 z-20 border-r border-slate-100 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] align-top">
                                               <div className="font-bold text-slate-800 text-sm truncate max-w-[280px]" title={p.product_name}>{p.product_name}</div>
                                               
                                               <div className="text-[10px] font-bold text-slate-500 mt-1 flex items-center gap-1">
@@ -964,11 +1009,11 @@ export default function PlanningPage() {
 
                                               {p.total_pending_po > 0 && (
                                                   <div className="text-[10px] font-bold text-teal-600 flex items-center gap-1 mt-0.5">
-                                                      <Truck size={12}/> กำลังมาส่ง (Pending PO): {p.total_pending_po} {p.base_uom}
+                                                      <Truck size={12}/> รอรับเข้าคลัง (Pending): {p.total_pending_po} {p.base_uom}
                                                   </div>
                                               )}
 
-                                              <div className="flex items-center justify-between mt-1.5">
+                                              <div className="flex items-center justify-between mt-2">
                                                   <div className="flex items-center gap-2">
                                                       <span className="text-[10px] text-slate-500 font-mono bg-slate-100 px-1.5 py-0.5 rounded">{p.product_id}</span>
                                                   </div>
@@ -985,17 +1030,33 @@ export default function PlanningPage() {
                                               </div>
                                           </td>
                                           
-                                          <td className="p-3 text-center border-r border-slate-100 font-mono font-bold text-slate-600 bg-slate-50/50 relative">
-                                              <div className="text-sm text-slate-800 flex items-center justify-center gap-1" title={forecastStrategy === 'ARIMA' ? `StdDev: ${forecast.stdDev.toFixed(2)}` : ''}>
-                                                  {forecast.appliedDemand.toFixed(1)}
+                                          {/* 🟢 ปัดเศษทศนิยมออกทั้งหมดด้วย Math.round() */}
+                                          <td className="p-2 border-r border-slate-100 bg-slate-50/50 align-top relative">
+                                              <div className="flex flex-col items-center justify-center h-full gap-1 mt-1">
+                                                  <div className="text-xl font-black text-purple-700" title="ยอดที่ AI คาดว่าน่าจะเบิกใช้">
+                                                      {Math.round(forecast.appliedDemand)}
+                                                  </div>
                                                   
+                                                  <div className="w-full px-2 mt-1">
+                                                      <div className="flex justify-between items-center text-[9px] text-slate-500 mb-0.5">
+                                                          <span>ใช้จริงเฉลี่ย:</span>
+                                                          <span className="font-bold">{Math.round(forecast.avgBase)}</span>
+                                                      </div>
+                                                      <div className="flex justify-between items-center text-[9px] font-bold">
+                                                          <span className="text-slate-400">Variance:</span>
+                                                          <span className={forecast.variancePercent > 10 ? 'text-rose-500' : forecast.variancePercent < -10 ? 'text-emerald-500' : 'text-slate-500'}>
+                                                              {forecast.variancePercent > 0 ? '+' : ''}{forecast.variancePercent.toFixed(0)}%
+                                                          </span>
+                                                      </div>
+                                                  </div>
+
                                                   {!forecast.hasDataInPeriod && forecast.appliedDemand === 0 && (
-                                                      <span title={`ไม่มีประวัติการเบิกใน ${forecast.baseAvgPeriod} วันที่ผ่านมา`}>
-                                                          <AlertTriangle size={14} className="text-amber-500 cursor-help" />
+                                                      <span title={`ไม่มีประวัติการเบิกใน ${forecast.baseAvgPeriod} วันที่ผ่านมา`} className="absolute top-1 right-1">
+                                                          <AlertTriangle size={12} className="text-amber-500 cursor-help" />
                                                       </span>
                                                   )}
+                                                  {demandFactor !== 1 && <div className="absolute top-1 left-1 text-[8px] text-purple-500 font-bold">x{demandFactor}</div>}
                                               </div>
-                                              {demandFactor !== 1 && <div className="text-[9px] text-purple-500 font-bold mt-0.5">x{demandFactor} applied</div>}
                                           </td>
                                           
                                           {timelineHeaders.map((head, idx) => {
@@ -1003,34 +1064,43 @@ export default function PlanningPage() {
                                               if (!dayData) return <td key={idx} className="border-r border-slate-100"></td>;
 
                                               const safetyStock = p.min_stock + (forecast.appliedDemand * p.lead_time);
-                                              const isWarning = dayData.projectedStock <= safetyStock;
-                                              const isCritical = dayData.projectedStock === 0 || dayData.isShortage; 
+                                              const isWarning = !dayData.isPast && dayData.projectedStock <= safetyStock;
+                                              const isCritical = !dayData.isPast && (dayData.projectedStock <= 0 || dayData.isShortage); 
 
                                               return (
                                                   <td 
                                                       key={idx} 
                                                       onClick={() => {
-                                                          if (isViewer) return; 
+                                                          if (isViewer || dayData.isPast) return; 
                                                           setCellModal({ product: p, ...dayData });
                                                           setLiveConversion(dayData.plannedPurchase);
                                                       }}
-                                                      className={`relative p-2 border-r border-slate-100 h-[70px] min-w-[120px] transition-colors ${!isViewer ? 'cursor-pointer hover:ring-2 hover:ring-inset hover:ring-indigo-400' : ''} ${isCritical ? 'bg-rose-50/50' : isWarning ? 'bg-amber-50/30' : 'bg-white'}`}
+                                                      className={`relative p-2 border-r border-slate-100 h-[80px] min-w-[120px] transition-colors ${dayData.isPast ? 'bg-slate-100/50 opacity-80' : !isViewer ? 'cursor-pointer hover:ring-2 hover:ring-inset hover:ring-indigo-400' : ''} ${isCritical ? 'bg-rose-50/50' : isWarning ? 'bg-amber-50/30' : ''}`}
                                                   >
                                                       {(dayData.plannedPurchase > 0 || dayData.incomingPO > 0) && (
-                                                          <div className="absolute top-1 right-1 flex flex-col items-end gap-1">
+                                                          <div className="absolute top-1 right-1 flex flex-col items-end gap-1 z-10">
                                                               {dayData.plannedPurchase > 0 && <span className="text-[10px] font-black text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded shadow-sm border border-emerald-200" title={`แผนสั่งซื้อ: ${dayData.plannedPurchase} ${p.purchase_uom}`}>+{dayData.plannedPurchase} {p.purchase_uom}</span>}
-                                                              {dayData.incomingPO > 0 && <span className="text-[9px] font-bold text-cyan-700 bg-cyan-100 px-1.5 py-0.5 rounded border border-cyan-200" title="รอรับเข้า (PO)">+{dayData.incomingPO} In</span>}
+                                                              
+                                                              {dayData.incomingPO > 0 && (
+                                                                  <span 
+                                                                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded border shadow-sm cursor-help ${dayData.isLatePO ? 'bg-rose-100 text-rose-700 border-rose-300 animate-pulse' : 'bg-cyan-100 text-cyan-700 border-cyan-200'}`} 
+                                                                      title={`สถานะ: ${dayData.isLatePO ? 'ล่าช้า (เลยกำหนดส่ง)' : 'รอรับเข้า (Pending)'}\nเลขที่ PO: ${dayData.poNumbers}\n\n* หากต้องการแก้ไขบิล ให้ไปที่หน้า Inbound`}
+                                                                  >
+                                                                      +{dayData.incomingPO} In {dayData.isLatePO ? '(Late!)' : ''}
+                                                                  </span>
+                                                              )}
                                                           </div>
                                                       )}
                                                       
                                                       <div className="flex items-center justify-center h-full">
-                                                          <div className={`font-black text-xl ${isCritical ? 'text-rose-600' : 'text-slate-800'} ${isWarning && !isCritical ? 'text-amber-600' : ''}`}>
-                                                              {Math.round(dayData.projectedStock)}
+                                                          <div className={`font-black text-xl ${dayData.isPast ? 'text-slate-400' : isCritical ? 'text-rose-600' : 'text-slate-800'} ${isWarning && !isCritical ? 'text-amber-600' : ''}`}>
+                                                              {dayData.isPast ? '-' : Math.round(dayData.projectedStock)}
                                                           </div>
                                                       </div>
 
-                                                      <span className="absolute bottom-1 left-1 text-[9px] font-bold text-rose-400 bg-white/50 px-1 rounded" title="คาดการณ์ยอดใช้ (Demand)">
-                                                          -{dayData.demand.toFixed(1)}
+                                                      {/* 🟢 โชว์ตัวเลขจำนวนเต็ม */}
+                                                      <span className={`absolute bottom-1 left-1 text-[9px] font-bold px-1 rounded ${dayData.isPast ? 'text-slate-500 bg-slate-200' : 'text-rose-500 bg-rose-50'}`} title={dayData.isPast ? "ยอดเบิกใช้จริง (Actual)" : "ยอดคาดการณ์ (Forecast)"}>
+                                                          {dayData.isPast ? 'จริง:' : 'แพลน:'} -{Math.round(dayData.demand)}
                                                       </span>
                                                   </td>
                                               );
