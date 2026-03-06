@@ -1,532 +1,498 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../../supabaseClient';
 import { 
-    Database, Package, Users, Search, UploadCloud, CheckCircle, 
-    AlertCircle, Edit2, Box, Store, RefreshCw, X, Save, 
-    ChevronLeft, ChevronRight, ShieldCheck, Filter, ArrowUpDown, Info, Clock
+    Edit2, Trash2, Plus, Save, X, Upload, Package, Users, Home, Search, 
+    Download, ChevronLeft, ChevronRight, DollarSign, Database, MapPin, Tag, Terminal, Activity,
+    FileSpreadsheet, Info, Layers, Box, Truck
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
-export default function MasterDataPage() {
-  const [activeTab, setActiveTab] = useState<'PRODUCTS' | 'VENDORS'>('PRODUCTS');
+export default function DevToolsPage() {
+  const [activeTab, setActiveTab] = useState('master_products');
+  const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [syncProgress, setSyncProgress] = useState('');
-  
-  const [products, setProducts] = useState<any[]>([]);
-  const [vendors, setVendors] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [currentItem, setCurrentItem] = useState<any>(null);
+  const [saveLoading, setSaveLoading] = useState(false);
 
-  // Pagination
+  // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 50;
 
-  // Edit Modal & Vendor Search States
-  const [editingProduct, setEditingProduct] = useState<any>(null);
-  const [vendorSearchInModal, setVendorSearchInModal] = useState('');
-  const [showVendorList, setShowVendorList] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const vendorRef = useRef<HTMLDivElement>(null);
+  // --- 🟢 CONFIG: TABS & COLUMNS (แยกคอลัมน์ครบ 100% ตาม Database) ---
+  const tabs = [
+      { 
+          id: 'master_products', label: 'Product Master', icon: Package, color: 'text-cyan-500', bg: 'bg-cyan-500/10', border: 'border-cyan-500/20',
+          pk: 'product_id',
+          columns: [
+              { key: 'product_id', label: 'SKU' },
+              { key: 'product_name', label: 'Product Name' },
+              { key: 'category', label: 'Category' },
+              { key: 'vendor_id', label: 'Vendor' },
+              { key: 'default_location', label: 'Location' },
+              { key: 'shelf_position', label: 'Shelf' },
+              { key: 'base_uom', label: 'Base Unit' },
+              { key: 'purchase_uom', label: 'Buy Unit' },
+              { key: 'conversion_rate', label: 'Conv.' },
+              { key: 'standard_cost', label: 'Cost' },
+              { key: 'min_stock', label: 'Min Stock' },
+              { key: 'lead_time', label: 'Lead Time' },
+              { key: 'moq', label: 'MOQ' },
+              { key: 'status', label: 'Status' }
+          ]
+      },
+      { 
+          id: 'master_vendors', label: 'Vendors', icon: Users, color: 'text-fuchsia-500', bg: 'bg-fuchsia-500/10', border: 'border-fuchsia-500/20',
+          pk: 'vendor_id',
+          columns: [ { key: 'vendor_id', label: 'Vendor Code' }, { key: 'vendor_name', label: 'Vendor Name' } ]
+      },
+      { 
+          id: 'master_branches', label: 'Branches', icon: Home, color: 'text-emerald-500', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20',
+          pk: 'branch_id',
+          columns: [ { key: 'branch_id', label: 'Branch ID & Name' }, { key: 'is_active', label: 'Active' } ]
+      }
+  ];
 
+  const currentTabConfig = tabs.find(t => t.id === activeTab);
+
+  // --- INITIAL LOAD ---
   useEffect(() => {
-      fetchMasterData();
+    fetchData();
+    setSearchTerm('');
+    setCurrentPage(1);
+  }, [activeTab]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const { data: items, error } = await supabase.from(activeTab).select('*');
+      if (error) throw error;
       
-      const handleClickOutside = (event: MouseEvent) => {
-          if (vendorRef.current && !vendorRef.current.contains(event.target as Node)) {
-              setShowVendorList(false);
-          }
-      };
-      document.addEventListener("mousedown", handleClickOutside);
-      return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const fetchMasterData = async () => {
-      setLoading(true);
-      setSyncProgress('กำลังดึงข้อมูลหลัก...');
-      try {
-          // ทะลวงขีดจำกัด 3,000 แถว
-          let allP: any[] = []; let hasMoreP = true; let offsetP = 0;
-          while(hasMoreP) {
-              const { data, error } = await supabase.from('master_products').select('*').range(offsetP, offsetP + 1000 - 1);
-              if (error || !data || data.length < 1000) hasMoreP = false;
-              if (data) allP = [...allP, ...data];
-              offsetP += 1000;
-          }
-          
-          let allV: any[] = []; let hasMoreV = true; let offsetV = 0;
-          while(hasMoreV) {
-              const { data, error } = await supabase.from('master_vendors').select('*').range(offsetV, offsetV + 1000 - 1);
-              if (error || !data || data.length < 1000) hasMoreV = false;
-              if (data) allV = [...allV, ...data];
-              offsetV += 1000;
-          }
-
-          setProducts(allP);
-          setVendors(allV);
-      } catch (error) { console.error(error); }
-      setLoading(false);
-      setSyncProgress('');
+      const pk = currentTabConfig?.pk || 'id';
+      const sortedItems = (items || []).sort((a,b) => (a[pk] || '').localeCompare(b[pk] || ''));
+      setData(sortedItems);
+    } catch (error: any) { 
+        console.error("Error fetching data:", error); 
+        alert("Load Error: " + error.message);
+    }
+    setLoading(false);
   };
 
-  // 🟢 1. ระบบอัปโหลด Excel (Smart Parsing Engine)
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      setLoading(true);
-      setSyncProgress('กำลังอ่านไฟล์ Excel ต้นฉบับ...');
+  // ==========================================
+  // 📥 IMPORT / 📤 EXPORT & TEMPLATE
+  // ==========================================
+  const handleDownloadTemplate = () => {
+      let templateData = {};
       
-      const reader = new FileReader();
-      reader.onload = async (evt: any) => {
-          try {
-              const data = new Uint8Array(evt.target.result);
-              const workbook = XLSX.read(data, { type: 'array' });
-              const sheet = workbook.Sheets[workbook.SheetNames[0]];
-              const rows = XLSX.utils.sheet_to_json<any>(sheet, { defval: "" });
+      // 🟢 Template ดึงโครงสร้าง Column ครบ 100%
+      if (activeTab === 'master_products') {
+          templateData = {
+              product_id: 'P-001',
+              product_name: 'ตัวอย่าง สินค้า ก.',
+              category: 'SM',
+              vendor_id: 'V-001',
+              default_location: 'MAIN_WH',
+              shelf_position: 'A11',
+              base_uom: 'Piece',
+              purchase_uom: 'Box',
+              conversion_rate: 10,
+              standard_cost: 150.50,
+              min_stock: 50,
+              lead_time: 3,
+              moq: 1,
+              status: 'ACTIVE'
+          };
+      } else if (activeTab === 'master_vendors') {
+          templateData = { vendor_id: 'V-001', vendor_name: 'บริษัท ตัวอย่าง จำกัด' };
+      } else if (activeTab === 'master_branches') {
+          templateData = { branch_id: 'BR-001', branch_name: '0001 EM-Emporium', is_active: 'TRUE' };
+      }
 
-              if (rows.length === 0) throw new Error("ไฟล์ว่างเปล่า");
-
-              setSyncProgress('กำลังวิเคราะห์โครงสร้างข้อมูล (Extracting AI)...');
-
-              const vendorMap = new Map<string, any>();
-              const productMap = new Map<string, any>();
-
-              rows.forEach(row => {
-                  const vId = String(row['Vendor ID'] || '').trim();
-                  const vName = String(row['Vender Name'] || '').trim();
-                  const isValidVendor = vId !== '' && vId !== '-';
-                  
-                  if (isValidVendor && !vendorMap.has(vId)) {
-                      vendorMap.set(vId, { vendor_id: vId, vendor_name: vName || `Vendor ${vId}` });
-                  }
-
-                  const pId = String(row['item_code'] || '').trim();
-                  if (pId) {
-                      const existingProduct = products.find(p => p.product_id === pId);
-                      
-                      // จัดการ MOQ
-                      const rawMoq = String(row['ขั้นต่ำการสั่งซื้อ (MOQ)'] || '').trim();
-                      const parsedMoq = (rawMoq.toLowerCase() === 'not_found' || isNaN(Number(rawMoq))) ? (existingProduct?.moq || 0) : Number(rawMoq);
-
-                      // จัดการชื่อสินค้า
-                      const newName = String(row['item_Name'] || row['item_name'] || '').trim();
-
-                      // จัดการสถานะ
-                      const rawActive = String(row['Active'] || '').trim().toUpperCase();
-                      let finalStatus = existingProduct?.status || 'ACTIVE'; 
-                      if (rawActive === 'Y') finalStatus = 'ACTIVE';
-                      else if (rawActive === 'N') finalStatus = 'INACTIVE';
-
-                      // 🟢 จัดการราคา (Price)
-                      const rawPrice = row['Price'];
-                      const parsedPrice = !isNaN(Number(rawPrice)) && rawPrice !== '' ? Number(rawPrice) : (existingProduct?.standard_cost || 0);
-
-                      // 🟢 วิเคราะห์สกัดระยะเวลารอของ (Lead Time) จากข้อความ
-                      const condition = String(row['เงื่อนไขในการจัดส่งสินค้า '] || row['เงื่อนไขในการจัดส่งสินค้า'] || '');
-                      const leadTimeMatch = condition.match(/(\d+)\s*วัน/);
-                      const parsedLeadTime = leadTimeMatch ? Number(leadTimeMatch[1]) : (existingProduct?.lead_time || 3);
-
-                      if (existingProduct) {
-                          // อัปเดตข้อมูลให้ฉลาดขึ้น
-                          productMap.set(pId, {
-                              ...existingProduct, 
-                              product_name: newName || existingProduct.product_name,
-                              status: finalStatus,
-                              vendor_id: isValidVendor ? vId : existingProduct.vendor_id,
-                              moq: parsedMoq,
-                              standard_cost: parsedPrice,
-                              lead_time: parsedLeadTime
-                          });
-                      } else {
-                          // สร้างสินค้าใหม่
-                          productMap.set(pId, {
-                              product_id: pId,
-                              product_name: newName || pId, 
-                              category: String(row['Type'] || 'Unknown').trim(),
-                              base_uom: 'Unit',
-                              purchase_uom: 'Unit',
-                              conversion_rate: 1,
-                              standard_cost: parsedPrice,
-                              status: finalStatus, 
-                              vendor_id: isValidVendor ? vId : null,
-                              moq: parsedMoq,
-                              min_stock: 0,
-                              lead_time: parsedLeadTime
-                          });
-                      }
-                  }
-              });
-
-              setSyncProgress(`กำลังอัปเดต ข้อมูลคู่ค้าจำนวน ${vendorMap.size} ราย...`);
-              const vendorsToUpsert = Array.from(vendorMap.values());
-              if (vendorsToUpsert.length > 0) {
-                  const { error: vError } = await supabase.from('master_vendors').upsert(vendorsToUpsert, { onConflict: 'vendor_id' });
-                  if (vError) throw new Error("Vendor Update Error: " + vError.message);
-              }
-
-              setSyncProgress(`กำลังอัปเดต สินค้าจำนวน ${productMap.size} รายการ...`);
-              const productsToUpsert = Array.from(productMap.values());
-              if (productsToUpsert.length > 0) {
-                  const { error: pError } = await supabase.from('master_products').upsert(productsToUpsert, { onConflict: 'product_id' });
-                  if (pError) throw new Error("Product Update Error: " + pError.message);
-              }
-
-              alert(`✅ อัปเดตข้อมูลสำเร็จ!\n\n- เพิ่ม/อัปเดตคู่ค้า: ${vendorsToUpsert.length} ราย\n- ปรับปรุงข้อมูลสินค้า: ${productsToUpsert.length} รายการ\n\n(✨ ระบบได้สกัดข้อมูล Lead Time และ ราคา ให้อัตโนมัติแล้ว)`);
-              fetchMasterData();
-
-          } catch (error: any) {
-              alert("❌ เกิดข้อผิดพลาด: " + error.message);
-          }
-          setLoading(false);
-          setSyncProgress('');
-      };
-      reader.readAsArrayBuffer(file);
-      e.target.value = ''; 
+      const ws = XLSX.utils.json_to_sheet([templateData]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Template");
+      XLSX.writeFile(wb, `${activeTab}_Template.xlsx`);
   };
 
-  // 🟢 2. ระบบค้นหา Vendor ใน Modal
-  const filteredVendorsInModal = useMemo(() => {
-      if (!vendorSearchInModal) return vendors;
-      const lower = vendorSearchInModal.toLowerCase();
-      return vendors.filter(v => 
-          v.vendor_name.toLowerCase().includes(lower) || 
-          v.vendor_id.toLowerCase().includes(lower)
-      ).slice(0, 10);
-  }, [vendors, vendorSearchInModal]);
+  const handleFileUpload = (event: any) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (e: any) => {
+        if (!window.confirm(`ยืนยันการนำเข้าข้อมูล Excel สู่ตาราง ${activeTab}?\n\n💡 ระบบรองรับ Bulk Edit: ถ้ารหัสเดิมมีอยู่แล้ว ระบบจะอัปเดตข้อมูลให้ ถ้ารหัสใหม่จะถูกเพิ่มเข้าไป`)) return;
+        setLoading(true);
+        try {
+            const buffer = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(buffer, { type: 'array' });
+            const rows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
+            
+            const pk = currentTabConfig?.pk || 'id';
+            const cleanRows = rows.map(row => {
+                const cleanRow = { ...row };
+                
+                if (activeTab === 'master_branches') {
+                    const fullName = cleanRow.branch_id || cleanRow.branch_name || row['ชื่อสาขา'] || row['Branch Name'] || row['Branch ID'];
+                    if (fullName && !cleanRow.branch_id) cleanRow.branch_id = String(fullName).trim();
+                    if (fullName && !cleanRow.branch_name) cleanRow.branch_name = String(fullName).trim();
+                    
+                    if (cleanRow.is_active === undefined || cleanRow.is_active === "") cleanRow.is_active = true; 
+                    delete cleanRow['ชื่อสาขา']; delete cleanRow['Branch Name']; delete cleanRow['Branch ID'];
+                }
 
-  const handleUpdateProduct = async (e: React.FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      const formData = new FormData(e.currentTarget);
-      const updatedData = {
-          product_name: String(formData.get('product_name')).trim(),
-          category: String(formData.get('category')).trim(),
-          vendor_id: editingProduct.vendor_id, 
-          purchase_uom: String(formData.get('purchase_uom')).trim(),
-          base_uom: String(formData.get('base_uom')).trim(),
-          conversion_rate: Number(formData.get('conversion_rate')),
-          standard_cost: Number(formData.get('standard_cost')),
-          moq: Number(formData.get('moq')),
-          min_stock: Number(formData.get('min_stock')),
-          lead_time: Number(formData.get('lead_time')),
-          status: String(formData.get('status')),
-      };
+                // 🟢 แปลงชนิดข้อมูลให้ตรงกับ Database 100%
+                if(cleanRow.standard_cost !== undefined && cleanRow.standard_cost !== "") cleanRow.standard_cost = parseFloat(cleanRow.standard_cost);
+                if(cleanRow.conversion_rate !== undefined && cleanRow.conversion_rate !== "") cleanRow.conversion_rate = parseFloat(cleanRow.conversion_rate);
+                if(cleanRow.min_stock !== undefined && cleanRow.min_stock !== "") cleanRow.min_stock = parseInt(cleanRow.min_stock);
+                if(cleanRow.lead_time !== undefined && cleanRow.lead_time !== "") cleanRow.lead_time = parseInt(cleanRow.lead_time);
+                if(cleanRow.moq !== undefined && cleanRow.moq !== "") cleanRow.moq = parseFloat(cleanRow.moq);
+                
+                // แปลงข้อมูล Boolean
+                if(cleanRow.is_active === 'TRUE' || cleanRow.is_active === 'true' || cleanRow.is_active === true) cleanRow.is_active = true;
+                if(cleanRow.is_active === 'FALSE' || cleanRow.is_active === 'false' || cleanRow.is_active === false) cleanRow.is_active = false;
 
-      setIsSaving(true);
-      try {
-          const { error } = await supabase.from('master_products').update(updatedData).eq('product_id', editingProduct.product_id);
-          if (error) throw error;
-          setProducts(products.map(p => p.product_id === editingProduct.product_id ? { ...p, ...updatedData } : p));
-          alert("✅ อัปเดตข้อมูลสินค้าสำเร็จ");
-          setEditingProduct(null);
-      } catch (err: any) { alert(err.message); }
-      setIsSaving(false);
+                if(cleanRow.shelf_position) cleanRow.shelf_position = String(cleanRow.shelf_position).trim();
+
+                // 🟢 ลบ Field ระบบทิ้งก่อนเพื่อความปลอดภัยเวลา Update
+                delete cleanRow.created_at;
+                delete cleanRow.updated_at;
+                if (pk !== 'id') delete cleanRow.id;
+
+                return cleanRow;
+            }).filter(row => row[pk]); 
+
+            // Deduplication
+            const uniqueMap = new Map();
+            cleanRows.forEach(row => { uniqueMap.set(row[pk], row); });
+            const deduplicatedRows = Array.from(uniqueMap.values());
+
+            if (deduplicatedRows.length > 0) {
+                const { error } = await supabase.from(activeTab).upsert(deduplicatedRows, { onConflict: pk });
+                if (error) throw error;
+                
+                const duplicateCount = cleanRows.length - deduplicatedRows.length;
+                let alertMsg = `✅ นำเข้าและอัปเดตข้อมูล ${deduplicatedRows.length} รายการสำเร็จ!`;
+                if (duplicateCount > 0) alertMsg += `\n(💡 กรองข้อมูลรหัสซ้ำกันออกไป ${duplicateCount} บรรทัด)`;
+                
+                alert(alertMsg); 
+                fetchData();
+            } else {
+                alert("⚠️ ไม่พบข้อมูลที่สามารถนำเข้าได้ กรุณาตรวจสอบหัวคอลัมน์ให้ตรงกับ Template");
+            }
+        } catch (error: any) { alert("Import Error: " + error.message); }
+        setLoading(false);
+    };
+    reader.readAsArrayBuffer(file);
+    event.target.value = null; 
+  };
+
+  const handleExport = () => {
+      if (data.length === 0) return alert("ไม่มีข้อมูลให้ Export");
+      
+      // ลบ ID ภายในระบบก่อน Export ออกไป ให้ตรงกับ Template ที่คนอ่านเข้าใจได้
+      const exportData = data.map(item => {
+          const row = { ...item };
+          delete row.id;
+          delete row.created_at;
+          delete row.updated_at;
+          return row;
+      });
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, activeTab);
+      XLSX.writeFile(wb, `${activeTab}_Export_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
+  // ==========================================
+  // CRUD ACTIONS
+  // ==========================================
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("ยืนยันการลบข้อมูลนี้? (การลบ Master Data อาจส่งผลกระทบต่อ Transaction ที่อ้างอิงถึง)")) return;
+    const pk = currentTabConfig?.pk || 'id';
+    setLoading(true);
+    try { 
+        const { error } = await supabase.from(activeTab).delete().eq(pk, id); 
+        if (error) throw error;
+        setData(data.filter(item => item[pk] !== id)); 
+        alert("✅ ลบข้อมูลสำเร็จ");
+    } catch (error: any) { alert("Delete Error: " + error.message); }
+    setLoading(false);
+  };
+
+  const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setSaveLoading(true);
+    const formData = new FormData(e.currentTarget);
+    const payload: any = Object.fromEntries(formData.entries());
+    
+    // แปลงชนิดข้อมูลตอนกดบันทึกให้ปลอดภัย
+    if (payload.standard_cost) payload.standard_cost = parseFloat(payload.standard_cost as string);
+    if (payload.conversion_rate) payload.conversion_rate = parseFloat(payload.conversion_rate as string);
+    if (payload.min_stock) payload.min_stock = parseInt(payload.min_stock as string);
+    if (payload.lead_time) payload.lead_time = parseInt(payload.lead_time as string);
+    if (payload.moq) payload.moq = parseFloat(payload.moq as string);
+    
+    if (activeTab === 'master_branches') {
+        payload.is_active = payload.is_active === 'on' ? true : false;
+        payload.branch_id = payload.branch_name;
+    }
+
+    const pk = currentTabConfig?.pk || 'id';
+    const docId = payload[pk] as string;
+
+    if (!docId) { setSaveLoading(false); return alert(`ข้อมูลไม่สมบูรณ์ ขาดรหัสหลัก (ID)`); }
+
+    try {
+        const { error } = await supabase.from(activeTab).upsert([payload], { onConflict: pk });
+        if (error) throw error;
+        setIsModalOpen(false); 
+        fetchData();
+        alert("✅ บันทึกข้อมูลสำเร็จ");
+    } catch (error: any) { alert("Save Error: " + error.message); }
+    setSaveLoading(false);
   };
 
   const filteredData = useMemo(() => {
-      const lowerSearch = searchTerm.toLowerCase();
-      if (activeTab === 'PRODUCTS') {
-          return products.filter(p => 
-              p.product_id.toLowerCase().includes(lowerSearch) || 
-              p.product_name.toLowerCase().includes(lowerSearch)
-          );
-      } else {
-          return vendors.filter(v => 
-              v.vendor_id.toLowerCase().includes(lowerSearch) || 
-              v.vendor_name.toLowerCase().includes(lowerSearch)
-          );
-      }
-  }, [products, vendors, searchTerm, activeTab]);
+      if (!searchTerm) return data;
+      const lower = searchTerm.toLowerCase();
+      return data.filter(item => Object.values(item).some(val => String(val).toLowerCase().includes(lower)));
+  }, [data, searchTerm]);
 
   const totalPages = Math.ceil(filteredData.length / itemsPerPage);
   const currentItems = filteredData.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
   return (
-    <div className="p-6 h-full bg-slate-50 flex flex-col font-sans overflow-hidden">
-      
-      {/* 🟢 Analytics Header */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 shrink-0">
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl"><Package size={24}/></div>
-              <div>
-                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Products</div>
-                  <div className="text-2xl font-black text-slate-800">{products.length}</div>
-              </div>
-          </div>
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl"><CheckCircle size={24}/></div>
-              <div>
-                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Active Items</div>
-                  <div className="text-2xl font-black text-emerald-600">{products.filter(p => p.status === 'ACTIVE').length}</div>
-              </div>
-          </div>
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-              <div className="p-3 bg-blue-50 text-blue-600 rounded-xl"><Users size={24}/></div>
-              <div>
-                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Vendors</div>
-                  <div className="text-2xl font-black text-blue-600">{vendors.length}</div>
-              </div>
-          </div>
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-              <div className="p-3 bg-amber-50 text-amber-600 rounded-xl"><ShieldCheck size={24}/></div>
-              <div>
-                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">System Mode</div>
-                  <div className="text-lg font-black text-amber-600">Advanced DB</div>
-              </div>
-          </div>
+    <div className="flex flex-col h-full bg-slate-50 font-sans">
+      <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm z-10 flex-shrink-0">
+        <div>
+            <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-600 to-blue-600 flex items-center gap-2">
+                <Database className="text-cyan-500" size={24}/> Master Data & Dev Tools
+            </h1>
+            <p className="text-slate-500 text-xs mt-1">ศูนย์กลางจัดการข้อมูลหลัก (Products, Vendors, Branches)</p>
+        </div>
+        <div className="flex gap-2 text-xs font-bold">
+            <span className="flex items-center gap-1 bg-emerald-50 text-emerald-600 border border-emerald-200 px-3 py-1.5 rounded-lg">
+                <Activity size={14}/> DB Connected
+            </span>
+        </div>
       </div>
 
-      <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 shrink-0">
-          <div className="flex bg-white p-1 rounded-xl border border-slate-200 shadow-sm w-full md:w-auto">
-              <button onClick={() => {setActiveTab('PRODUCTS'); setCurrentPage(1);}} className={`px-6 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${activeTab === 'PRODUCTS' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}>
-                  <Package size={16}/> สินค้า ({products.length})
-              </button>
-              <button onClick={() => {setActiveTab('VENDORS'); setCurrentPage(1);}} className={`px-6 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${activeTab === 'VENDORS' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}>
-                  <Store size={16}/> คู่ค้า ({vendors.length})
-              </button>
+      <div className="flex flex-1 overflow-hidden">
+          <div className="w-64 bg-white border-r border-slate-200 flex flex-col p-4 space-y-2 z-0">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 px-2">Data Tables</div>
+              {tabs.map(tab => (
+                  <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                      className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-3 transition-all ${activeTab === tab.id ? `${tab.bg} ${tab.border} border ${tab.color} font-bold shadow-sm` : 'hover:bg-slate-50 text-slate-600 font-medium'}`}
+                  >
+                      <tab.icon size={18} className={activeTab === tab.id ? tab.color : 'text-slate-400'}/>
+                      {tab.label}
+                  </button>
+              ))}
           </div>
 
-          <div className="flex items-center gap-3 w-full md:w-auto">
-              <div className="relative flex-1 md:w-80">
-                  <Search className="absolute left-3 top-2.5 text-slate-400" size={18}/>
-                  <input type="text" placeholder={`ค้นหา${activeTab === 'PRODUCTS' ? 'สินค้า' : 'คู่ค้า'}...`} className="w-full pl-10 p-2.5 bg-white border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
-              </div>
-              <button onClick={fetchMasterData} disabled={loading} className="p-2.5 bg-white border border-slate-300 text-slate-600 rounded-xl hover:bg-slate-50 transition-colors shadow-sm">
-                  <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
-              </button>
-              <label className="flex items-center justify-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold shadow-md shadow-indigo-200 hover:bg-indigo-700 cursor-pointer transition-all active:scale-95 group">
-                  <UploadCloud size={18} className="group-hover:-translate-y-1 transition-transform"/>
-                  {loading ? 'Processing...' : 'Upload Master File'}
-                  <input type="file" accept=".xlsx, .csv" className="hidden" onChange={handleFileUpload} disabled={loading}/>
-              </label>
-          </div>
-      </div>
-
-      {/* 🟢 Main Table with New Layout */}
-      <div className="flex-1 bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-0">
-          <div className="flex-1 overflow-auto custom-scrollbar">
-              <table className="w-full text-left text-sm border-separate border-spacing-0">
-                  <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase sticky top-0 z-10">
-                      <tr>
-                          <th className="p-4 pl-6 border-b border-slate-100 w-16">Action</th>
-                          <th className="p-4 border-b border-slate-100 w-24">Status</th>
-                          <th className="p-4 border-b border-slate-100">{activeTab === 'PRODUCTS' ? 'รหัส / ชื่อสินค้า' : 'รหัส / ชื่อคู่ค้า'}</th>
-                          {activeTab === 'PRODUCTS' && (
-                              <>
-                                  <th className="p-4 border-b border-slate-100 text-center w-36">หน่วยสั่ง/จ่าย (UOM)</th>
-                                  <th className="p-4 border-b border-slate-100 text-right w-28">ต้นทุน (Cost)</th>
-                                  <th className="p-4 border-b border-slate-100 text-center w-28">LT / MOQ</th>
-                                  <th className="p-4 border-b border-slate-100 w-48">ผูกคู่ค้า (Vendor)</th>
-                              </>
-                          )}
-                          {activeTab === 'VENDORS' && <th className="p-4 border-b border-slate-100 text-center">จำนวนสินค้าที่ผูก</th>}
-                      </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                      {currentItems.length === 0 ? (
-                          <tr><td colSpan={7} className="p-16 text-center text-slate-400 font-bold"><Database size={48} className="mx-auto mb-4 opacity-20"/>ไม่พบข้อมูลที่ค้นหา</td></tr>
-                      ) : currentItems.map(item => (
-                          <tr key={activeTab === 'PRODUCTS' ? item.product_id : item.vendor_id} className="hover:bg-slate-50/80 transition-colors group">
-                              <td className="p-4 pl-6">
-                                  {activeTab === 'PRODUCTS' ? (
-                                      <button onClick={() => {setEditingProduct(item); setVendorSearchInModal('');}} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
-                                          <Edit2 size={14}/>
-                                      </button>
-                                  ) : <Info size={16} className="text-slate-300"/>}
-                              </td>
-                              <td className="p-4">
-                                  <span className={`px-2 py-1 rounded-md text-[10px] font-black border ${item.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
-                                      {item.status || 'ACTIVE'}
-                                  </span>
-                              </td>
-                              <td className="p-4">
-                                  <div className="font-bold text-slate-800">{activeTab === 'PRODUCTS' ? item.product_id : item.vendor_id}</div>
-                                  <div className="text-xs text-slate-400 line-clamp-1 truncate max-w-[280px]">{activeTab === 'PRODUCTS' ? item.product_name : item.vendor_name}</div>
-                              </td>
-                              {activeTab === 'PRODUCTS' && (
-                                  <>
-                                      <td className="p-4 text-center">
-                                          <div className="flex flex-col items-center">
-                                              <span className="font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded text-[10px]">{item.purchase_uom}</span>
-                                              <div className="text-[9px] text-slate-400 mt-0.5 font-bold">1 = {item.conversion_rate} {item.base_uom}</div>
-                                          </div>
-                                      </td>
-                                      <td className="p-4 text-right font-mono font-bold text-slate-600">
-                                          ฿{Number(item.standard_cost).toLocaleString(undefined, {minimumFractionDigits: 2})}
-                                      </td>
-                                      <td className="p-4 text-center">
-                                          <div className="text-xs font-bold text-slate-700 flex justify-center items-center gap-1"><Clock size={12} className="text-amber-500"/> {item.lead_time || 0} วัน</div>
-                                          <div className="text-[9px] font-bold text-slate-400 mt-0.5 bg-slate-100 px-1 rounded inline-block">MOQ: {item.moq || 0}</div>
-                                      </td>
-                                      <td className="p-4">
-                                          <div className="text-xs font-bold text-slate-600 truncate max-w-[150px]">{vendors.find(v => v.vendor_id === item.vendor_id)?.vendor_name || '-'}</div>
-                                          <div className="text-[9px] font-mono text-slate-300">{item.vendor_id}</div>
-                                      </td>
-                                  </>
-                              )}
-                              {activeTab === 'VENDORS' && (
-                                  <td className="p-4 text-center">
-                                      <span className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full font-bold text-xs border border-blue-100">
-                                          {products.filter(p => p.vendor_id === item.vendor_id).length} Items
-                                      </span>
-                                  </td>
-                              )}
-                          </tr>
-                      ))}
-                  </tbody>
-              </table>
-          </div>
-
-          <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-between items-center shrink-0">
-              <div className="text-xs font-bold text-slate-400">Showing {currentItems.length} of {filteredData.length} entries</div>
-              {totalPages > 1 && (
-                  <div className="flex items-center gap-2">
-                      <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 disabled:opacity-30 transition-colors"><ChevronLeft size={16}/></button>
-                      <span className="text-xs font-black text-slate-700 px-2">Page {currentPage} of {totalPages}</span>
-                      <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-2 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 disabled:opacity-30 transition-colors"><ChevronRight size={16}/></button>
+          <div className="flex-1 p-6 flex flex-col overflow-hidden bg-slate-100">
+              
+              <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-2xl mb-4 flex items-start gap-3 shadow-sm shrink-0">
+                  <Info className="text-blue-500 shrink-0 mt-0.5" size={18}/>
+                  <div className="text-sm">
+                      <strong className="font-bold">การแก้ไขข้อมูลจำนวนมาก (Bulk Edit):</strong> คุณสามารถกดปุ่ม <span className="font-bold bg-white px-1.5 py-0.5 rounded border border-blue-200 text-xs">Export</span> เพื่อนำข้อมูลที่มีอยู่ไปแก้ไขใน Excel จากนั้นกดปุ่ม <span className="font-bold bg-white px-1.5 py-0.5 rounded border border-blue-200 text-xs">Import</span> นำไฟล์นั้นกลับเข้ามา ระบบจะอ่านหัวคอลัมน์ภาษาอังกฤษแล้วอัปเดตทับข้อมูลเดิมให้ทันที!
                   </div>
-              )}
-          </div>
-      </div>
+              </div>
 
-      {/* 🟢 Edit Modal (Searchable Vendor) */}
-      {editingProduct && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-              <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
-                  <div className="p-6 border-b border-slate-100 bg-indigo-50 flex justify-between items-center shrink-0">
-                      <div>
-                          <h3 className="font-black text-indigo-900 text-xl flex items-center gap-3"><Edit2 size={24} className="text-indigo-600"/> Edit Master Information</h3>
-                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest mt-1">Product SKU: {editingProduct.product_id}</p>
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col flex-1 overflow-hidden relative">
+                  
+                  <div className="p-4 border-b border-slate-100 flex flex-wrap justify-between items-center gap-4 bg-slate-50">
+                      <div className="relative w-full max-w-sm">
+                          <Search className="absolute left-3 top-2.5 text-slate-400" size={18}/>
+                          <input type="text" placeholder={`Search in ${currentTabConfig?.label}...`} className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-xl text-sm bg-white focus:ring-2 focus:ring-cyan-500 outline-none shadow-inner"
+                              value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
                       </div>
-                      <button onClick={() => setEditingProduct(null)} className="p-2 hover:bg-rose-500 hover:text-white text-slate-400 rounded-full transition-all"><X size={24}/></button>
-                  </div>
-
-                  <form onSubmit={handleUpdateProduct} className="flex-1 overflow-y-auto p-8 bg-white custom-scrollbar">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      
+                      <div className="flex gap-2 flex-wrap">
+                          <button onClick={handleDownloadTemplate} className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl font-bold hover:bg-emerald-100 text-sm shadow-sm transition-colors">
+                              <FileSpreadsheet size={16}/> Template
+                          </button>
                           
-                          {/* Left Column: Basic Info */}
-                          <div className="space-y-6">
-                              <div>
-                                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Product Name (Display)</label>
-                                  <input type="text" name="product_name" defaultValue={editingProduct.product_name} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500" required />
-                              </div>
-                              <div className="grid grid-cols-2 gap-4">
-                                  <div>
-                                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Category</label>
-                                      <input type="text" name="category" defaultValue={editingProduct.category} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none" required />
-                                  </div>
-                                  <div>
-                                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Status</label>
-                                      <select name="status" defaultValue={editingProduct.status} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none">
-                                          <option value="ACTIVE">🟢 ACTIVE</option>
-                                          <option value="INACTIVE">🔴 INACTIVE</option>
-                                      </select>
-                                  </div>
-                              </div>
-
-                              <div className="pt-4 border-t border-slate-100">
-                                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3">Linked Vendor (Searchable)</label>
-                                  <div className="relative" ref={vendorRef}>
-                                      <div className="relative">
-                                          <Store className="absolute left-3 top-3.5 text-indigo-400" size={18}/>
-                                          <input 
-                                              type="text" 
-                                              placeholder="Type to search vendor..."
-                                              className="w-full pl-10 p-3.5 bg-blue-50/50 border border-blue-100 rounded-2xl font-black text-indigo-900 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-                                              value={vendorSearchInModal || vendors.find(v => v.vendor_id === editingProduct.vendor_id)?.vendor_name || ''}
-                                              onChange={e => {setVendorSearchInModal(e.target.value); setShowVendorList(true);}}
-                                              onFocus={() => setShowVendorList(true)}
-                                          />
-                                          {editingProduct.vendor_id && (
-                                              <div className="absolute right-3 top-3 text-[10px] font-mono bg-indigo-600 text-white px-2 py-1 rounded-lg shadow-sm">
-                                                  ID: {editingProduct.vendor_id}
-                                              </div>
-                                          )}
-                                      </div>
-
-                                      {showVendorList && (
-                                          <div className="absolute z-50 w-full mt-2 bg-white border border-slate-200 rounded-2xl shadow-2xl max-h-56 overflow-y-auto animate-fade-in-up">
-                                              {filteredVendorsInModal.map(v => (
-                                                  <div 
-                                                      key={v.vendor_id} 
-                                                      onClick={() => {
-                                                          setEditingProduct({...editingProduct, vendor_id: v.vendor_id});
-                                                          setVendorSearchInModal(v.vendor_name);
-                                                          setShowVendorList(false);
-                                                      }}
-                                                      className="p-4 hover:bg-indigo-50 cursor-pointer flex justify-between items-center border-b border-slate-50 last:border-0 transition-colors"
-                                                  >
-                                                      <div className="font-bold text-slate-700 text-sm">{v.vendor_name}</div>
-                                                      <div className="text-[10px] font-mono text-slate-400">{v.vendor_id}</div>
-                                                  </div>
-                                              ))}
-                                              {filteredVendorsInModal.length === 0 && <div className="p-4 text-center text-xs text-slate-400 font-bold">ไม่พบข้อมูลคู่ค้า</div>}
-                                          </div>
-                                      )}
-                                  </div>
-                              </div>
-                          </div>
-
-                          {/* Right Column: Logistics & Cost */}
-                          <div className="space-y-6">
-                              <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 space-y-4 shadow-inner">
-                                  <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest flex items-center gap-2"><Box size={16}/> UOM & Conversion</h4>
-                                  <div className="grid grid-cols-3 gap-3 items-end">
-                                      <div>
-                                          <label className="text-[9px] font-bold text-indigo-500 mb-1 block">Buy Unit</label>
-                                          <input type="text" name="purchase_uom" defaultValue={editingProduct.purchase_uom} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-center font-bold text-sm" required />
-                                      </div>
-                                      <div className="text-center pb-2 font-black text-slate-300">=</div>
-                                      <div>
-                                          <label className="text-[9px] font-bold text-indigo-500 mb-1 block">Conv. Rate</label>
-                                          <input type="number" step="0.01" name="conversion_rate" defaultValue={editingProduct.conversion_rate} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-center font-black text-indigo-600" required />
-                                      </div>
-                                  </div>
-                                  <div>
-                                      <label className="text-[9px] font-bold text-emerald-500 mb-1 block text-center uppercase">Base Unit (Internal)</label>
-                                      <input type="text" name="base_uom" defaultValue={editingProduct.base_uom} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-center font-bold text-sm text-emerald-600" required />
-                                  </div>
-                              </div>
-
-                              <div className="grid grid-cols-2 gap-4">
-                                  <div className="bg-orange-50/50 p-5 rounded-[2rem] border border-orange-100">
-                                      <label className="text-[10px] font-black text-orange-400 uppercase tracking-widest block mb-2">Cost / Base Unit</label>
-                                      <div className="relative">
-                                          <span className="absolute left-3 top-3 font-bold text-orange-400">฿</span>
-                                          <input type="number" step="0.01" name="standard_cost" defaultValue={editingProduct.standard_cost} className="w-full pl-7 p-3 bg-white border border-orange-200 rounded-2xl font-black text-orange-700 outline-none" required />
-                                      </div>
-                                  </div>
-                                  <div className="bg-indigo-50/50 p-5 rounded-[2rem] border border-indigo-100">
-                                      <label className="text-[10px] font-black text-indigo-400 uppercase tracking-widest block mb-2">MOQ (Buy Unit)</label>
-                                      <input type="number" step="0.1" name="moq" defaultValue={editingProduct.moq} className="w-full p-3 bg-white border border-indigo-200 rounded-2xl font-black text-indigo-700 outline-none" required />
-                                  </div>
-                              </div>
-
-                              <div className="grid grid-cols-2 gap-4">
-                                  <div>
-                                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">Safety Stock</label>
-                                      <input type="number" name="min_stock" defaultValue={editingProduct.min_stock} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl font-bold outline-none focus:border-indigo-400" required />
-                                  </div>
-                                  <div>
-                                      <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">Lead Time (Days)</label>
-                                      <input type="number" name="lead_time" defaultValue={editingProduct.lead_time} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl font-bold outline-none focus:border-indigo-400" required />
-                                  </div>
-                              </div>
-                          </div>
-                      </div>
-
-                      <div className="mt-10 flex gap-4 shrink-0">
-                          <button type="button" onClick={() => setEditingProduct(null)} className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black hover:bg-slate-200 transition-all">Cancel</button>
-                          <button type="submit" disabled={isSaving} className="flex-[2] py-4 bg-indigo-600 text-white rounded-2xl font-black shadow-xl shadow-indigo-200 hover:bg-indigo-700 flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50">
-                              {isSaving ? <RefreshCw size={20} className="animate-spin"/> : <Save size={20}/>} 
-                              {isSaving ? 'UPDATING...' : 'SAVE CHANGES'}
+                          <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-xl text-slate-600 font-bold hover:bg-slate-100 text-sm shadow-sm transition-colors">
+                              <Download size={16}/> Export
+                          </button>
+                          <label className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-xl font-bold hover:bg-black text-sm cursor-pointer shadow-md transition-all">
+                              <Upload size={16}/> Import
+                              <input type="file" accept=".xlsx, .csv" className="hidden" onChange={handleFileUpload}/>
+                          </label>
+                          <button onClick={() => { setCurrentItem(null); setIsModalOpen(true); }} className={`flex items-center gap-2 px-4 py-2 text-white rounded-xl font-bold text-sm shadow-md transition-all hover:brightness-110 ${activeTab==='master_products' ? 'bg-cyan-600 shadow-cyan-200' : activeTab==='master_vendors' ? 'bg-fuchsia-600 shadow-fuchsia-200' : 'bg-emerald-600 shadow-emerald-200'}`}>
+                              <Plus size={16}/> New Record
                           </button>
                       </div>
-                  </form>
+                  </div>
+
+                  <div className="flex-1 overflow-auto bg-white custom-scrollbar">
+                      {/* 🟢 แสดงตารางคอลัมน์เต็มรูปแบบแยกชัดเจน */}
+                      <table className="w-full text-left text-sm whitespace-nowrap">
+                          <thead className="bg-slate-100/80 text-slate-500 font-bold uppercase text-[10px] tracking-wider sticky top-0 backdrop-blur-md z-10 shadow-sm border-b border-slate-200">
+                              <tr>
+                                  <th className="p-4 w-10 text-center">#</th>
+                                  {currentTabConfig?.columns.map(col => <th key={col.key} className="p-4">{col.label}</th>)}
+                                  <th className="p-4 text-center w-28 bg-slate-100 sticky right-0 shadow-[-5px_0_10px_-5px_rgba(0,0,0,0.05)] border-l border-slate-200">Actions</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                              {loading ? <tr><td colSpan={15} className="p-12 text-center text-slate-400"><Activity className="animate-spin mx-auto mb-2 text-cyan-500"/> Loading Database...</td></tr> : 
+                               currentItems.length === 0 ? <tr><td colSpan={15} className="p-12 text-center text-slate-400">No records found.</td></tr> :
+                               currentItems.map((item, idx) => (
+                                  <tr key={item[currentTabConfig?.pk || ''] || idx} className="hover:bg-slate-50 transition-colors group">
+                                      <td className="p-4 text-center text-xs text-slate-400 font-mono">{(currentPage - 1) * itemsPerPage + idx + 1}</td>
+                                      {currentTabConfig?.columns.map(col => (
+                                          <td key={col.key} className="p-4 text-slate-700">
+                                              {col.key === 'standard_cost' 
+                                                ? <span className="font-bold text-emerald-600">฿ {item[col.key]?.toLocaleString(undefined, {maximumFractionDigits: 2})}</span> 
+                                                : col.key === 'status' ? (
+                                                    <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${item[col.key] === 'ACTIVE' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>{item[col.key]}</span>
+                                                )
+                                                : col.key === 'is_active' ? (
+                                                    <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${item[col.key] ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{item[col.key] ? 'TRUE' : 'FALSE'}</span>
+                                                )
+                                                : col.key === 'default_location' || col.key === 'shelf_position' || col.key === 'category' ? (
+                                                    <span className={`text-[10px] font-black px-2 py-1 rounded uppercase tracking-wider ${item[col.key] && item[col.key] !== '-' ? (col.key === 'category' ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700 border border-amber-200') : 'bg-slate-100 text-slate-400'}`}>
+                                                        {col.key === 'default_location' ? <MapPin size={10} className="inline mr-1 mb-0.5"/> : col.key === 'shelf_position' ? <Layers size={10} className="inline mr-1 mb-0.5"/> : <Tag size={10} className="inline mr-1 mb-0.5"/>}
+                                                        {item[col.key] || '-'}
+                                                    </span>
+                                                )
+                                                : col.key === 'purchase_uom' || col.key === 'base_uom' ? (
+                                                    <span className="text-[10px] font-bold px-2 py-1 rounded bg-slate-100 text-slate-600 border border-slate-200">{item[col.key] || '-'}</span>
+                                                )
+                                                : col.key === 'conversion_rate' || col.key === 'moq' || col.key === 'lead_time' || col.key === 'min_stock' ? (
+                                                    <span className="font-mono text-slate-500 font-bold">{item[col.key] || 0}</span>
+                                                )
+                                                : <span className={col.key.includes('id') ? 'font-mono text-xs font-bold text-cyan-700' : ''}>{item[col.key] || '-'}</span>
+                                              }
+                                          </td>
+                                      ))}
+                                      <td className="p-4 text-center bg-white group-hover:bg-slate-50 sticky right-0 shadow-[-5px_0_10px_-5px_rgba(0,0,0,0.05)] border-l border-slate-100">
+                                          <div className="flex items-center justify-center gap-2">
+                                              <button onClick={() => { setCurrentItem(item); setIsModalOpen(true); }} className="p-1.5 text-slate-400 hover:text-cyan-600 hover:bg-cyan-50 rounded-lg transition-colors"><Edit2 size={16}/></button>
+                                              <button onClick={() => handleDelete(item[currentTabConfig?.pk || 'id'])} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"><Trash2 size={16}/></button>
+                                          </div>
+                                      </td>
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
+                  
+                  <div className="p-3 border-t border-slate-200 bg-slate-50 flex justify-between items-center text-xs text-slate-500">
+                      <div>Showing <b>{currentItems.length}</b> of <b>{filteredData.length}</b> records</div>
+                      <div className="flex items-center gap-2">
+                          <button onClick={() => setCurrentPage(p => Math.max(1, p-1))} disabled={currentPage===1} className="p-1.5 bg-white border border-slate-300 rounded shadow-sm hover:bg-slate-100 disabled:opacity-50"><ChevronLeft size={16}/></button>
+                          <span className="font-bold text-slate-700 px-2">Page {currentPage} of {totalPages || 1}</span>
+                          <button onClick={() => setCurrentPage(p => Math.min(totalPages, p+1))} disabled={currentPage===totalPages || totalPages===0} className="p-1.5 bg-white border border-slate-300 rounded shadow-sm hover:bg-slate-100 disabled:opacity-50"><ChevronRight size={16}/></button>
+                      </div>
+                  </div>
               </div>
           </div>
-      )}
+      </div>
 
+      {/* --- FORM MODAL --- */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden border border-slate-200">
+            <div className="p-5 bg-slate-50 border-b border-slate-200 flex justify-between items-center relative overflow-hidden">
+                <div className={`absolute -right-10 -top-10 w-32 h-32 rounded-full opacity-20 ${activeTab==='master_products' ? 'bg-cyan-500' : activeTab==='master_vendors' ? 'bg-fuchsia-500' : 'bg-emerald-500'}`}></div>
+                <h3 className="font-bold text-xl text-slate-800 flex items-center gap-2 relative z-10">
+                    {currentItem ? <Edit2 size={20} className="text-cyan-600"/> : <Plus size={20} className="text-cyan-600"/>} 
+                    {currentItem ? 'Edit Record' : 'Create New Record'}
+                </h3>
+                <button onClick={() => setIsModalOpen(false)} className="p-2 bg-white rounded-full hover:bg-rose-50 text-slate-400 hover:text-rose-500 transition-colors relative z-10"><X size={20}/></button>
+            </div>
+            
+            <form onSubmit={handleSave} className="p-6 space-y-5">
+                {activeTab === 'master_products' && (
+                    <>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">SKU / ID *</label><input name="product_id" defaultValue={currentItem?.product_id} required readOnly={!!currentItem} className={`w-full p-2.5 border border-slate-300 rounded-xl text-sm font-mono focus:ring-2 focus:ring-cyan-500 outline-none ${currentItem ? 'bg-slate-100 text-slate-500' : 'bg-white'}`} placeholder="P-001"/></div>
+                            <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Product Name *</label><input name="product_name" defaultValue={currentItem?.product_name} required className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="ชื่อสินค้า"/></div>
+                        </div>
+                        
+                        <div className="grid grid-cols-3 gap-4">
+                            <div><label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><Tag size={12}/> Zone (Category)</label><input name="category" defaultValue={currentItem?.category} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="e.g. SM"/></div>
+                            <div><label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><MapPin size={12}/> Room (Location)</label><input name="default_location" defaultValue={currentItem?.default_location} className="w-full p-2.5 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl font-bold uppercase text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. MAIN_WH"/></div>
+                            <div><label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><Layers size={12}/> Shelf (ชั้นวาง)</label><input name="shelf_position" defaultValue={currentItem?.shelf_position} className="w-full p-2.5 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl font-bold uppercase text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. A11"/></div>
+                        </div>
+
+                        <div className="bg-cyan-50/50 p-4 rounded-xl border border-cyan-100">
+                            <h4 className="text-xs font-bold text-cyan-700 mb-3 flex items-center gap-2"><DollarSign size={14}/> Base Unit & Standard Cost</h4>
+                            <div className="grid grid-cols-3 gap-3">
+                                <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Base UOM</label><input name="base_uom" defaultValue={currentItem?.base_uom || 'Piece'} required className="w-full p-2 border border-cyan-200 rounded-lg text-sm text-center bg-white" placeholder="ชิ้น"/></div>
+                                <div className="col-span-2"><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Cost (per Base Unit)</label><input name="standard_cost" type="number" step="0.01" defaultValue={currentItem?.standard_cost} className="w-full p-2 border border-cyan-200 rounded-lg text-sm font-bold text-emerald-600 bg-white" placeholder="0.00"/></div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-4">
+                             <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Buy UOM</label><input name="purchase_uom" defaultValue={currentItem?.purchase_uom} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="ลัง"/></div>
+                             <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Conv. Rate</label><input name="conversion_rate" type="number" step="0.01" defaultValue={currentItem?.conversion_rate || 1} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="1"/></div>
+                             <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Min Stock</label><input name="min_stock" type="number" defaultValue={currentItem?.min_stock || 10} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="10"/></div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-4">
+                             <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Lead Time (Days)</label><input name="lead_time" type="number" defaultValue={currentItem?.lead_time || 3} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="3"/></div>
+                             <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">MOQ (Buy Unit)</label><input name="moq" type="number" step="0.01" defaultValue={currentItem?.moq || 1} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="1"/></div>
+                             <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Vendor ID</label><input name="vendor_id" defaultValue={currentItem?.vendor_id || ''} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm font-mono" placeholder="V-001"/></div>
+                        </div>
+                        
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Status</label>
+                            <select name="status" defaultValue={currentItem?.status || 'ACTIVE'} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none bg-white">
+                                <option value="ACTIVE">ACTIVE (เปิดใช้งาน)</option>
+                                <option value="INACTIVE">INACTIVE (ปิดใช้งาน/ซ่อน)</option>
+                            </select>
+                        </div>
+                    </>
+                )}
+
+                {activeTab === 'master_vendors' && (
+                    <div className="space-y-4">
+                        <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Vendor Code (ID) *</label><input name="vendor_id" defaultValue={currentItem?.vendor_id} required readOnly={!!currentItem} className={`w-full p-3 border border-slate-300 rounded-xl font-mono focus:ring-2 focus:ring-fuchsia-500 outline-none ${currentItem ? 'bg-slate-100 text-slate-500' : 'bg-white'}`} placeholder="V-001"/></div>
+                        <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Vendor Name *</label><input name="vendor_name" defaultValue={currentItem?.vendor_name} required className="w-full p-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-fuchsia-500 outline-none" placeholder="บริษัทจำกัด..."/></div>
+                    </div>
+                )}
+
+                {activeTab === 'master_branches' && (
+                    <div className="space-y-4">
+                        <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl text-xs text-blue-700 mb-2">
+                            💡 แนะนำ: ระบุ Branch Name เป็นแบบ <b>"รหัส - ชื่อเต็ม"</b> (เช่น <b>0001 EM-Emporium</b>) ระบบจะนำไปใช้เป็น ID ด้วยอัตโนมัติ
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Branch ID & Name *</label>
+                            <input 
+                                name="branch_name" 
+                                defaultValue={currentItem?.branch_name} 
+                                required 
+                                className="w-full p-3 border border-slate-300 rounded-xl font-bold focus:ring-2 focus:ring-emerald-500 outline-none" 
+                                placeholder="เช่น 0001 EM-Emporium"
+                            />
+                        </div>
+                        <div className="flex items-center gap-2 mt-4 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                            <input type="checkbox" name="is_active" id="is_active" defaultChecked={currentItem ? currentItem.is_active : true} className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500"/>
+                            <label htmlFor="is_active" className="text-sm font-bold text-slate-700 cursor-pointer">เปิดใช้งานสาขานี้ (Active)</label>
+                        </div>
+                    </div>
+                )}
+
+                <div className="pt-4 border-t border-slate-100 flex gap-3">
+                    <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors">Cancel</button>
+                    <button type="submit" disabled={saveLoading} className={`flex-1 py-3 rounded-xl text-white font-bold flex justify-center items-center gap-2 shadow-lg transition-all ${activeTab==='master_products' ? 'bg-cyan-600 hover:bg-cyan-700 shadow-cyan-200' : activeTab==='master_vendors' ? 'bg-fuchsia-600 hover:bg-fuchsia-700 shadow-fuchsia-200' : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'} disabled:opacity-50`}>
+                        {saveLoading ? 'Saving...' : <><Save size={18}/> Save Data</>}
+                    </button>
+                </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
