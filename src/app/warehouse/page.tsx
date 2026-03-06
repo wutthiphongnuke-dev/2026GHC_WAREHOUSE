@@ -66,7 +66,6 @@ export default function Inventory() {
     setSyncProgress('กำลังเตรียมข้อมูล...');
     try {
         const [prodRes, lotsRes] = await Promise.all([
-            // 🟢 ดึง shelf_position มาด้วย
             supabase.from('master_products').select('*'),
             supabase.from('inventory_lots').select('product_id, quantity, storage_location')
         ]);
@@ -149,6 +148,7 @@ export default function Inventory() {
             const totalOut = stats.out;
 
             const avgDailyOut = totalOut / calcPeriod;
+            // 🟢 คำนวณจำนวนวันที่อยู่ได้ (สินค้าที่มี / ค่าเฉลี่ยจ่าย)
             const daysSupply = avgDailyOut > 0 ? Math.floor(currentStock / avgDailyOut) : (currentStock > 0 ? 999 : 0);
             const sellThrough = (totalOut + currentStock) > 0 ? (totalOut / (currentStock + totalOut)) * 100 : 0;
 
@@ -158,6 +158,7 @@ export default function Inventory() {
             else if (totalOut === 0 && calcPeriod >= 14) status = 'Dead Stock';
             else if (sellThrough < 10 && calcPeriod >= 14) status = 'Slow Moving';
 
+            // 🟢 คำนวณวันหมดอายุสต๊อก
             const today = new Date();
             const depleteDate = new Date(today);
             depleteDate.setDate(today.getDate() + daysSupply);
@@ -171,7 +172,7 @@ export default function Inventory() {
                 unit: product.base_uom || 'Piece',
                 location: locationStr,
                 default_location: product.default_location || '-', 
-                shelf_position: product.shelf_position || '-', // 🟢 เพิ่ม shelf_position
+                shelf_position: product.shelf_position || '-', 
                 total_in: totalIn,
                 total_out: totalOut,
                 avg_daily: avgDailyOut,
@@ -214,7 +215,6 @@ export default function Inventory() {
   const handleSaveAdjust = async () => {
       if (isViewer) return alert('ไม่มีสิทธิ์เข้าถึงการแก้ไข');
       if (!adjustItem) return;
-      // 🟢 แก้ไข: ให้รองรับทศนิยมโดยใช้ parseFloat
       const newQty = parseFloat(adjustQty);
       if (isNaN(newQty) || newQty < 0) return alert("Please enter a valid positive number");
       setIsAdjusting(true);
@@ -257,7 +257,6 @@ export default function Inventory() {
               const changes: any[] = [];
               rows.forEach((row: any) => {
                   const pid = String(row['รหัสสินค้า (Product ID)'] || row['Product ID'] || row['product_id'] || '').trim();
-                  // 🟢 แก้ไข: ให้รองรับทศนิยมตอนดึงข้อมูลจาก Excel
                   const newQty = parseFloat(row['ยอดสต๊อกใหม่ (New Qty)'] || row['New Qty']);
                   const reason = String(row['เหตุผลการปรับยอด (Reason)'] || row['Reason'] || 'Bulk Import Adjustment');
 
@@ -377,6 +376,7 @@ export default function Inventory() {
   };
 
   const handleExportReport = () => {
+      // 🟢 อัปเดตคอลัมน์ Export ให้สอดคล้องกับวันที่คาดว่าจะหมด
       const exportData = sortedData.map(item => ({
           'รหัส': item.product_id,
           'ชื่อสินค้า': item.product_name,
@@ -386,11 +386,12 @@ export default function Inventory() {
           'Inbound': item.total_in,
           'Category / Zone': item.category,
           'Location (ห้อง)': item.location,
-          'Shelf (ชั้นวาง)': item.shelf_position, // 🟢 เพิ่มคอลัมน์ Shelf ใน Export
+          'Shelf (ชั้นวาง)': item.shelf_position,
           'Status': item.status,
           '% การระบายสินค้า': item.sell_through.toFixed(2) + '%',
           'ค่าเฉลี่ยจ่าย/วัน': item.avg_daily.toFixed(2),
-          'จำนวนวันที่จ่ายได้': item.days_supply,
+          'สินค้าจ่ายได้ถึง (วว/ดด/ปป)': item.current_qty <= 0 ? 'หมดสต๊อก' : (item.days_supply > 365 ? 'Safe (>1 ปี)' : item.depletion_date.split('-').reverse().join('/')),
+          'จำนวนวันที่เหลือ': item.days_supply,
           'Hidden': item.is_hidden ? 'Yes' : 'No'
       }));
       const ws = XLSX.utils.json_to_sheet(exportData);
@@ -550,7 +551,6 @@ export default function Inventory() {
                 <thead className="bg-slate-100 text-slate-600 font-bold border-b text-xs uppercase sticky top-0 z-20 shadow-sm">
                     <tr>
                         <th className="p-3 pl-4 sticky left-0 bg-slate-100 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] cursor-pointer hover:bg-slate-200" onClick={() => handleSort('product_id')}>Product Info <ArrowUpDown size={10} className="inline ml-1"/></th>
-                        {/* 🟢 อัปเดตหัวตาราง โชว์ Room & Shelf */}
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200 bg-cyan-50/50" onClick={() => handleSort('location')}><MapPin size={12} className="inline mr-1"/>Room & Shelf <ArrowUpDown size={10} className="inline ml-1"/></th>
                         <th className="p-3 text-center bg-gray-50 cursor-pointer hover:bg-gray-200" onClick={() => handleSort('current_qty')}>Stock <ArrowUpDown size={10} className="inline ml-1"/></th>
                         <th className="p-3 text-center">Unit</th>
@@ -558,7 +558,13 @@ export default function Inventory() {
                         <th className="p-3 text-center text-rose-700 bg-rose-50">Outbound</th>
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('avg_daily')}>Avg Out/Day</th>
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('sell_through')}>Sell-Through</th>
-                        <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('days_supply')}>Days Supply</th>
+                        {/* 🟢 อัปเดตส่วน Header เพื่อแสดงวันที่จ่ายได้ถึง */}
+                        <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('days_supply')}>
+                            <div className="flex flex-col items-center">
+                                <span>สินค้าจ่ายได้ถึง</span>
+                                <span className="text-[9px] font-medium text-slate-400 mt-0.5">(วว/ดด/ปป)</span>
+                            </div>
+                        </th>
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('status')}>Status</th>
                         <th className="p-3 text-center w-28">Action</th>
                     </tr>
@@ -579,7 +585,6 @@ export default function Inventory() {
                                     <div className="text-xs text-slate-500 truncate w-40 mt-0.5" title={item.product_name}>{item.product_name}</div>
                                 </td>
 
-                                {/* 🟢 แสดง Room (Location) และ Shelf (ชั้นวาง) */}
                                 <td className="p-3 text-center bg-cyan-50/30">
                                     <div className="text-[10px] font-bold text-cyan-600 bg-white border border-cyan-100 rounded px-1.5 py-0.5 inline-block mb-1 shadow-sm uppercase tracking-wider truncate max-w-[100px]" title={`ห้อง (Room/Location): ${item.location}`}>
                                         RM: {item.location}
@@ -589,7 +594,6 @@ export default function Inventory() {
                                     </div>
                                 </td>
 
-                                {/* 🟢 ให้แสดงผลแบบมีทศนิยม */}
                                 <td className="p-3 text-center font-bold text-lg text-slate-800 bg-gray-50/30">{item.current_qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                 <td className="p-3 text-center text-xs text-slate-500">{item.unit}</td>
                                 <td className="p-3 text-center text-emerald-600 bg-emerald-50/10">+{item.total_in.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
@@ -601,11 +605,24 @@ export default function Inventory() {
                                         <div className={`h-full ${item.sell_through > 50 ? 'bg-emerald-500' : 'bg-amber-400'}`} style={{width: `${Math.min(item.sell_through, 100)}%`}}></div>
                                     </div>
                                 </td>
+                                
+                                {/* 🟢 อัปเดตส่วนแสดงผลวันที่หมด */}
                                 <td className="p-3 text-center">
-                                    <span className={`px-2 py-1 rounded font-bold ${item.days_supply <= alertDays && !showArchived ? 'text-rose-700 bg-rose-100 animate-pulse' : 'text-slate-700'}`}>
-                                        {item.days_supply > 365 ? '>1Y' : item.days_supply}
+                                    <span className={`px-2 py-1 rounded font-bold text-sm ${item.days_supply <= alertDays && !showArchived ? 'text-rose-700 bg-rose-100 animate-pulse' : 'text-slate-700'}`}>
+                                        {item.current_qty <= 0 
+                                            ? '-' 
+                                            : item.days_supply > 365 
+                                                ? 'Safe (>1 ปี)' 
+                                                : item.depletion_date.split('-').reverse().join('/')}
                                     </span>
+                                    {/* 🟢 แสดงจำนวนวันเล็กๆ ไว้ด้านล่างให้ดูง่ายๆ */}
+                                    {item.current_qty > 0 && item.days_supply <= 365 && (
+                                        <div className="text-[9px] font-bold text-slate-400 mt-0.5">
+                                            (เหลือ {item.days_supply} วัน)
+                                        </div>
+                                    )}
                                 </td>
+
                                 <td className="p-3 text-center">
                                     <span className={`text-[10px] px-2 py-1 rounded-full border font-bold ${
                                         item.status === 'Out of Stock' ? 'bg-slate-200 text-slate-500' :
@@ -672,7 +689,6 @@ export default function Inventory() {
                       </div>
                       <div className="mb-4">
                           <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Current Quantity</label>
-                          {/* 🟢 แก้ไข input ให้รองรับทศนิยม step="0.01" */}
                           <input type="number" step="0.01" className="w-full p-3 border border-slate-300 rounded-xl text-xl font-bold text-center focus:ring-2 focus:ring-cyan-500 outline-none" value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} autoFocus />
                       </div>
                       <div>
