@@ -7,14 +7,12 @@ import { Search, UploadCloud, Layers, ArrowUpDown, RefreshCw, Download, ChevronL
 import * as XLSX from 'xlsx';
 
 export default function Inventory() {
-  // --- 🛡️ ROLE SECURITY STATE ---
   const [userRole, setUserRole] = useState<string>('VIEWER');
 
   const [inventory, setInventory] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [syncProgress, setSyncProgress] = useState<string>(''); 
 
-  // --- Settings & Filters ---
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [locationFilter, setLocationFilter] = useState('ALL');
@@ -23,25 +21,20 @@ export default function Inventory() {
   const [calcPeriod, setCalcPeriod] = useState(30); 
   const [showArchived, setShowArchived] = useState(false); 
 
-  // --- Pagination ---
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 100;
 
-  // --- Sort ---
   const [sortConfig, setSortConfig] = useState({ key: 'days_supply', direction: 'asc' });
 
-  // --- SINGLE ADJUST MODAL ---
   const [adjustItem, setAdjustItem] = useState<any>(null);
   const [adjustQty, setAdjustQty] = useState('');
   const [adjustReason, setAdjustReason] = useState('');
   const [isAdjusting, setIsAdjusting] = useState(false);
 
-  // --- BULK ADJUST MODAL (Preview) ---
   const [bulkPreviewData, setBulkPreviewData] = useState<any[]>([]);
   const [isBulkPreviewOpen, setIsBulkPreviewOpen] = useState(false);
   const [isBulkSaving, setIsBulkSaving] = useState(false);
 
-  // --- STOCK CARD MODAL ---
   const [stockCardItem, setStockCardItem] = useState<any>(null);
   const [stockHistory, setStockHistory] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -60,7 +53,7 @@ export default function Inventory() {
 
   const isViewer = userRole === 'VIEWER';
 
-  // 🟢 1. FETCH DATA (อัปเดตให้ดึง Location/Shelf จาก Master Data 100%)
+  // 🟢 1. FETCH DATA 
   const fetchData = async () => {
     setLoading(true);
     setSyncProgress('กำลังเตรียมข้อมูล...');
@@ -74,7 +67,6 @@ export default function Inventory() {
         const allProducts = prodRes.data || [];
         const lotsData = lotsRes.data || [];
 
-        // เตรียมข้อมูลสต๊อกปัจจุบัน (นับเฉพาะจำนวน ไม่สนใจ Location ใน Lot อีกต่อไป)
         const invMap: Record<string, { total_qty: number }> = {};
         lotsData.forEach((lot: any) => {
             if (!invMap[lot.product_id]) invMap[lot.product_id] = { total_qty: 0 };
@@ -84,7 +76,7 @@ export default function Inventory() {
         const dateLimit = new Date();
         dateLimit.setDate(dateLimit.getDate() - calcPeriod + 1);
         dateLimit.setHours(0, 0, 0, 0); 
-        const dateLimitStr = dateLimit.toISOString().split('T')[0];
+        const dateLimitStr = new Date(dateLimit.getTime() - (dateLimit.getTimezoneOffset() * 60000)).toISOString().split('T')[0] + 'T00:00:00.000Z';
 
         setSyncProgress('กำลังดึงประวัติย้อนหลัง...');
         let allTransactions: any[] = [];
@@ -99,10 +91,7 @@ export default function Inventory() {
                 .gte('transaction_date', dateLimitStr)
                 .range(offset, offset + limitSize - 1); 
 
-            if (tErr) {
-                console.error("Error fetching transactions:", tErr);
-                break;
-            }
+            if (tErr) break;
 
             if (tData && tData.length > 0) {
                 allTransactions = [...allTransactions, ...tData];
@@ -126,14 +115,14 @@ export default function Inventory() {
             const absQty = Math.abs(qty);
             const type = String(t.transaction_type).toUpperCase();
 
-            const isIn = type.includes('IN') || type.includes('RECV') || type.includes('RECEIPT');
-            const isOut = type.includes('OUT') || type.includes('TRANS') || type.includes('DISP') || type.includes('ISSUE') || type.includes('SALE') || type.includes('USE');
-            const isAdjust = type.includes('ADJUST') || type.includes('CYCLE');
+            const isOutboundKeyword = type.includes('OUT') || type.includes('TRANS') || type.includes('DISP') || type.includes('ISSUE') || type.includes('SALE') || type.includes('USE');
+            const isNegativeButNotAdjust = qty < 0 && !type.includes('ADJUST') && !type.includes('CYCLE') && !type.includes('IN') && !type.includes('RECV') && !type.includes('RECEIPT');
+            const isInboundKeyword = type.includes('IN') || type.includes('RECV') || type.includes('RECEIPT');
 
-            if (isIn || (qty > 0 && !isAdjust)) {
-                txStatsMap[pid].in += absQty;
-            } else if (isOut || (qty < 0 && !isAdjust)) {
+            if (isOutboundKeyword || isNegativeButNotAdjust) {
                 txStatsMap[pid].out += absQty;
+            } else if (isInboundKeyword || (qty > 0 && !type.includes('ADJUST') && !type.includes('CYCLE'))) {
+                txStatsMap[pid].in += absQty;
             }
         });
 
@@ -141,7 +130,6 @@ export default function Inventory() {
             const stockInfo = invMap[product.product_id] || { total_qty: 0 };
             const currentStock = stockInfo.total_qty;
             
-            // 🟢 ดึง Location และ Shelf จาก Master Database 100%
             const locationStr = product.default_location || '-';
             const shelfStr = product.shelf_position || '-';
 
@@ -170,9 +158,9 @@ export default function Inventory() {
                 category: product.category || 'Uncategorized',
                 current_qty: currentStock,
                 unit: product.base_uom || 'Piece',
-                location: locationStr, // ค่าจาก Master DB
+                location: locationStr, 
                 default_location: locationStr, 
-                shelf_position: shelfStr, // ค่าจาก Master DB
+                shelf_position: shelfStr, 
                 total_in: totalIn,
                 total_out: totalOut,
                 avg_daily: avgDailyOut,
@@ -192,18 +180,25 @@ export default function Inventory() {
     setSyncProgress('');
   };
 
-  // 🟢 2. SINGLE ADJUST STOCK LOGIC
+  // 🚀 2. SINGLE ADJUST (อัปเกรดให้บังคับยอดแทนการบวกลบส่วนต่าง แก้บั๊ก 100%)
   const executeStockAdjust = async (productId: string, diff: number, newQty: number, reason: string, defaultLoc: string) => {
-      const { data: lots } = await supabase.from('inventory_lots').select('*').eq('product_id', productId).order('quantity', { ascending: false }).limit(1);
+      const { data: lots } = await supabase.from('inventory_lots').select('*').eq('product_id', productId).order('quantity', { ascending: false });
       
       if (lots && lots.length > 0) {
-          const newLotQty = Number(lots[0].quantity) + diff;
-          await supabase.from('inventory_lots').update({ quantity: newLotQty, last_updated: new Date().toISOString() }).eq('lot_id', lots[0].lot_id);
+          // 1. บังคับให้ Lot หลัก มีค่าเท่ากับยอดสต๊อกใหม่ที่ผู้ใช้คีย์มาเป๊ะๆ
+          await supabase.from('inventory_lots').update({ quantity: newQty, last_updated: new Date().toISOString() }).eq('lot_id', lots[0].lot_id);
+          
+          // 2. ถ้ามี Lot อื่นๆ ซ้ำซ้อนอยู่ ให้เคลียร์ทิ้งเป็น 0 ให้หมด เพื่อป้องกันยอดรวมเพี้ยน
+          if (lots.length > 1) {
+              const otherLotIds = lots.slice(1).map(l => l.lot_id);
+              await supabase.from('inventory_lots').update({ quantity: 0 }).in('lot_id', otherLotIds);
+          }
       } else {
-          // ถ้าไม่มี Lot เก่า ให้ใช้ default_location จาก Master Product
+          // ถ้าไม่มี Lot เก่า ให้สร้างใหม่
           await supabase.from('inventory_lots').insert([{ product_id: productId, quantity: newQty, storage_location: defaultLoc || 'MAIN_WH' }]);
       }
 
+      // บันทึกประวัติ
       await supabase.from('transactions_log').insert([{
           transaction_type: 'ADJUST',
           product_id: productId,
@@ -217,12 +212,12 @@ export default function Inventory() {
       if (isViewer) return alert('ไม่มีสิทธิ์เข้าถึงการแก้ไข');
       if (!adjustItem) return;
       const newQty = parseFloat(adjustQty);
-      if (isNaN(newQty) || newQty < 0) return alert("Please enter a valid positive number");
+      if (isNaN(newQty) || newQty < 0) return alert("กรุณากรอกตัวเลขให้ถูกต้อง (ห้ามติดลบ)");
       setIsAdjusting(true);
       try {
           const diff = newQty - adjustItem.current_qty;
           if (diff !== 0) await executeStockAdjust(adjustItem.product_id, diff, newQty, adjustReason || 'Manual Adjustment', adjustItem.default_location);
-          alert("✅ Stock Updated Successfully!");
+          alert("✅ ปรับยอดสต๊อกสำเร็จ!");
           setAdjustItem(null);
           fetchData();
       } catch (error: any) { alert("Error: " + error.message); }
@@ -234,9 +229,9 @@ export default function Inventory() {
       const exportData = sortedData.map(item => ({
           'รหัสสินค้า (Product ID)': item.product_id,
           'ชื่อสินค้า (Product Name)': item.product_name,
-          'Location (ห้อง)': item.location,          // ✅ ดึงจากฐานข้อมูลหลักมาแสดงใน Excel ให้ดูง่าย
-          'Shelf (ชั้นวาง)': item.shelf_position,       // ✅ ดึงจากฐานข้อมูลหลักมาแสดงใน Excel ให้ดูง่าย
-          'หน่วย (Unit)': item.unit,                  // ✅ ดึงจากฐานข้อมูลหลักมาแสดงใน Excel ให้ดูง่าย
+          'Location (ห้อง)': item.location,
+          'Shelf (ชั้นวาง)': item.shelf_position,
+          'หน่วย (Unit)': item.unit,
           'ยอดสต๊อกปัจจุบัน (Current Qty)': item.current_qty,
           'ยอดสต๊อกใหม่ (New Qty)': '', 
           'เหตุผลการปรับยอด (Reason)': 'Audit Check'
@@ -260,7 +255,6 @@ export default function Inventory() {
               
               const changes: any[] = [];
               rows.forEach((row: any) => {
-                  // 🟢 รับเฉพาะข้อมูลที่จำเป็น (รหัส, ยอดใหม่, หมายเหตุ) ข้าม Location/Shelf ใน Excel ไปเลย
                   const pid = String(row['รหัสสินค้า (Product ID)'] || row['Product ID'] || row['product_id'] || '').trim();
                   const newQty = parseFloat(row['ยอดสต๊อกใหม่ (New Qty)'] || row['New Qty']);
                   const reason = String(row['เหตุผลการปรับยอด (Reason)'] || row['Reason'] || 'Bulk Import Adjustment');
@@ -295,6 +289,7 @@ export default function Inventory() {
       reader.readAsArrayBuffer(file);
   };
 
+  // 🚀 4. อัปเกรด Bulk Adjust (แบบเดียวกับ Single Adjust เพื่อกันยอดเพี้ยน)
   const handleConfirmBulkAdjust = async () => {
       if (isViewer) return;
       setIsBulkSaving(true);
@@ -327,20 +322,33 @@ export default function Inventory() {
 
                   if (productLots.length > 0) {
                       productLots.sort((a, b) => Number(b.quantity) - Number(a.quantity));
-                      const targetLot = productLots[0];
+                      const mainLot = productLots[0];
 
+                      // 1. บังคับ Lot หลักให้เท่ากับ New Qty
                       lotsToUpsert.push({
-                          lot_id: targetLot.lot_id,
+                          lot_id: mainLot.lot_id,
                           product_id: item.product_id,
-                          storage_location: targetLot.storage_location, // เก็บของในกล่องเดิมที่มีอยู่
-                          quantity: Number(targetLot.quantity) + diff,
+                          storage_location: mainLot.storage_location, 
+                          quantity: newQty, 
                           last_updated: now
                       });
+
+                      // 2. เคลียร์ Lot ย่อยที่เหลือเป็น 0
+                      for (let j = 1; j < productLots.length; j++) {
+                          lotsToUpsert.push({
+                              lot_id: productLots[j].lot_id,
+                              product_id: item.product_id,
+                              storage_location: productLots[j].storage_location,
+                              quantity: 0,
+                              last_updated: now
+                          });
+                      }
+
                   } else {
                       lotsToInsert.push({
                           product_id: item.product_id,
                           quantity: newQty,
-                          storage_location: item.default_location || 'MAIN_WH', // หากไม่เคยมีสต๊อก ให้ดึงห้องตั้งต้นจาก Master Data
+                          storage_location: item.default_location || 'MAIN_WH', 
                           last_updated: now
                       });
                   }
@@ -739,7 +747,6 @@ export default function Inventory() {
                                       <td className="p-3 pl-4">
                                           <div className="font-bold text-slate-800">{item.product_id}</div>
                                           <div className="text-xs text-slate-500 truncate w-48">{item.product_name}</div>
-                                          {/* แสดง Location / Shelf เพื่อให้เห็นชัดเจนว่าผูกกับ Master Database ถูกต้องแล้ว */}
                                           <div className="text-[10px] text-slate-400 mt-0.5">Loc: {item.default_location} | Shelf: {item.shelf_position}</div>
                                       </td>
                                       <td className="p-3 text-center text-slate-500 font-bold">{item.unit}</td>
