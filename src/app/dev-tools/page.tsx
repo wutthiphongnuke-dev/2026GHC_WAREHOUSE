@@ -95,12 +95,15 @@ export default function DevToolsPage() {
               conversion_rate: 10,
               standard_cost: 150.50,
               min_stock: 50,
+              lead_time: 3,
+              moq: 1,
+              vendor_id: 'V-001',
               status: 'ACTIVE'
           };
       } else if (activeTab === 'master_vendors') {
           templateData = { vendor_id: 'V-001', vendor_name: 'บริษัท ตัวอย่าง จำกัด' };
       } else if (activeTab === 'master_branches') {
-          templateData = { branch_name: '0001 EM-Emporium', is_active: 'TRUE' };
+          templateData = { branch_id: 'BR-001', branch_name: '0001 EM-Emporium', is_active: 'TRUE' };
       }
 
       const ws = XLSX.utils.json_to_sheet([templateData]);
@@ -126,28 +129,32 @@ export default function DevToolsPage() {
                 const cleanRow = { ...row };
                 
                 if (activeTab === 'master_branches') {
-                    const fullName = row['ชื่อสาขา'] || row['branch_name'] || row['Branch Name'] || row['branch_id'] || row['Branch ID'];
-                    if (fullName) {
-                        cleanRow.branch_id = String(fullName).trim();
-                        cleanRow.branch_name = String(fullName).trim();
-                    }
+                    const fullName = cleanRow.branch_id || cleanRow.branch_name || row['ชื่อสาขา'] || row['Branch Name'] || row['Branch ID'];
+                    if (fullName && !cleanRow.branch_id) cleanRow.branch_id = String(fullName).trim();
+                    if (fullName && !cleanRow.branch_name) cleanRow.branch_name = String(fullName).trim();
+                    
                     if (cleanRow.is_active === undefined || cleanRow.is_active === "") cleanRow.is_active = true; 
                     delete cleanRow['ชื่อสาขา']; delete cleanRow['Branch Name']; delete cleanRow['Branch ID'];
                 }
 
-                if(cleanRow.standard_cost) cleanRow.standard_cost = parseFloat(cleanRow.standard_cost);
-                if(cleanRow.conversion_rate) cleanRow.conversion_rate = parseFloat(cleanRow.conversion_rate);
-                if(cleanRow.min_stock) cleanRow.min_stock = parseInt(cleanRow.min_stock);
+                if(cleanRow.standard_cost !== undefined && cleanRow.standard_cost !== "") cleanRow.standard_cost = parseFloat(cleanRow.standard_cost);
+                if(cleanRow.conversion_rate !== undefined && cleanRow.conversion_rate !== "") cleanRow.conversion_rate = parseFloat(cleanRow.conversion_rate);
+                if(cleanRow.min_stock !== undefined && cleanRow.min_stock !== "") cleanRow.min_stock = parseInt(cleanRow.min_stock);
+                if(cleanRow.lead_time !== undefined && cleanRow.lead_time !== "") cleanRow.lead_time = parseInt(cleanRow.lead_time);
+                if(cleanRow.moq !== undefined && cleanRow.moq !== "") cleanRow.moq = parseFloat(cleanRow.moq);
                 
                 if(cleanRow.is_active === 'TRUE' || cleanRow.is_active === 'true' || cleanRow.is_active === true) cleanRow.is_active = true;
                 if(cleanRow.is_active === 'FALSE' || cleanRow.is_active === 'false' || cleanRow.is_active === false) cleanRow.is_active = false;
 
                 if(cleanRow.shelf_position) cleanRow.shelf_position = String(cleanRow.shelf_position).trim();
 
+                delete cleanRow.created_at;
+                delete cleanRow.updated_at;
+                if (pk !== 'id') delete cleanRow.id;
+
                 return cleanRow;
             }).filter(row => row[pk]); 
 
-            // Deduplication
             const uniqueMap = new Map();
             cleanRows.forEach(row => { uniqueMap.set(row[pk], row); });
             const deduplicatedRows = Array.from(uniqueMap.values());
@@ -174,7 +181,16 @@ export default function DevToolsPage() {
 
   const handleExport = () => {
       if (data.length === 0) return alert("ไม่มีข้อมูลให้ Export");
-      const ws = XLSX.utils.json_to_sheet(data);
+      
+      const exportData = data.map(item => {
+          const row = { ...item };
+          delete row.id;
+          delete row.created_at;
+          delete row.updated_at;
+          return row;
+      });
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, activeTab);
       XLSX.writeFile(wb, `${activeTab}_Export_${new Date().toISOString().split('T')[0]}.xlsx`);
@@ -205,6 +221,8 @@ export default function DevToolsPage() {
     if (payload.standard_cost) payload.standard_cost = parseFloat(payload.standard_cost as string);
     if (payload.conversion_rate) payload.conversion_rate = parseFloat(payload.conversion_rate as string);
     if (payload.min_stock) payload.min_stock = parseInt(payload.min_stock as string);
+    if (payload.lead_time) payload.lead_time = parseInt(payload.lead_time as string);
+    if (payload.moq) payload.moq = parseFloat(payload.moq as string);
     
     if (activeTab === 'master_branches') {
         payload.is_active = payload.is_active === 'on' ? true : false;
@@ -231,6 +249,17 @@ export default function DevToolsPage() {
       const lower = searchTerm.toLowerCase();
       return data.filter(item => Object.values(item).some(val => String(val).toLowerCase().includes(lower)));
   }, [data, searchTerm]);
+
+  // 🟢 คำนวณรายชื่อ Category และ Location ที่มีอยู่ในระบบอัตโนมัติ เพื่อสร้าง Auto-suggest
+  const uniqueCategories = useMemo(() => {
+      if (activeTab !== 'master_products') return [];
+      return [...new Set(data.map(i => i.category).filter(Boolean))].sort();
+  }, [data, activeTab]);
+
+  const uniqueLocations = useMemo(() => {
+      if (activeTab !== 'master_products') return [];
+      return [...new Set(data.map(i => i.default_location).filter(Boolean))].sort();
+  }, [data, activeTab]);
 
   const totalPages = Math.ceil(filteredData.length / itemsPerPage);
   const currentItems = filteredData.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -269,7 +298,7 @@ export default function DevToolsPage() {
               <div className="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-2xl mb-4 flex items-start gap-3 shadow-sm shrink-0">
                   <Info className="text-blue-500 shrink-0 mt-0.5" size={18}/>
                   <div className="text-sm">
-                      <strong className="font-bold">แก้ไขข้อมูล (Bulk Edit):</strong> คุณสามารถกดปุ่ม <span className="font-bold bg-white px-1.5 py-0.5 rounded border border-blue-200 text-xs">Export</span> เพื่อนำข้อมูลทั้งหมดไปแก้ไข (เช่น แก้ Location หรือ UOM) ใน Excel จากนั้นกดปุ่ม <span className="font-bold bg-white px-1.5 py-0.5 rounded border border-blue-200 text-xs">Import</span> นำไฟล์ที่แก้แล้วกลับเข้ามา ระบบจะอัปเดตข้อมูลทับของเดิมให้ทันทีโดยอัตโนมัติ!
+                      <strong className="font-bold">การแก้ไขข้อมูลจำนวนมาก (Bulk Edit):</strong> คุณสามารถกดปุ่ม <span className="font-bold bg-white px-1.5 py-0.5 rounded border border-blue-200 text-xs">Export</span> เพื่อนำข้อมูลที่มีอยู่ไปแก้ไขใน Excel จากนั้นกดปุ่ม <span className="font-bold bg-white px-1.5 py-0.5 rounded border border-blue-200 text-xs">Import</span> นำไฟล์นั้นกลับเข้ามา ระบบจะอ่านหัวคอลัมน์แล้วอัปเดตทับข้อมูลเดิมให้ทันที!
                   </div>
               </div>
 
@@ -383,10 +412,26 @@ export default function DevToolsPage() {
                             <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Product Name *</label><input name="product_name" defaultValue={currentItem?.product_name} required className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="ชื่อสินค้า"/></div>
                         </div>
                         
+                        {/* 🟢 อัปเดตช่อง Category และ Location ให้สามารถเลือกจากประวัติที่มีอยู่ หรือพิมพ์เองได้ (Hybrid Input) */}
                         <div className="grid grid-cols-3 gap-4">
-                            <div><label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><Tag size={12}/> Zone (Category)</label><input name="category" defaultValue={currentItem?.category} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="e.g. SM"/></div>
-                            <div><label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><MapPin size={12}/> Room (Location)</label><input name="default_location" defaultValue={currentItem?.default_location} className="w-full p-2.5 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl font-bold uppercase text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. MAIN_WH"/></div>
-                            <div><label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><Layers size={12}/> Shelf (ชั้นวาง)</label><input name="shelf_position" defaultValue={currentItem?.shelf_position} className="w-full p-2.5 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl font-bold uppercase text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. A11"/></div>
+                            <div>
+                                <label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><Tag size={12}/> Category(หมวดสินค้า) </label>
+                                <input list="category-options" name="category" defaultValue={currentItem?.category} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500 outline-none" placeholder="e.g. SM"/>
+                                <datalist id="category-options">
+                                    {uniqueCategories.map(c => <option key={c as string} value={c as string} />)}
+                                </datalist>
+                            </div>
+                            <div>
+                                <label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><MapPin size={12}/> Room (Location)</label>
+                                <input list="location-options" name="default_location" defaultValue={currentItem?.default_location} className="w-full p-2.5 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl font-bold uppercase text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. MAIN_WH"/>
+                                <datalist id="location-options">
+                                    {uniqueLocations.map(l => <option key={l as string} value={l as string} />)}
+                                </datalist>
+                            </div>
+                            <div>
+                                <label className="text-[11px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><Layers size={12}/> Shelf (ชั้นวาง)</label>
+                                <input name="shelf_position" defaultValue={currentItem?.shelf_position} className="w-full p-2.5 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl font-bold uppercase text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. A11"/>
+                            </div>
                         </div>
 
                         <div className="bg-cyan-50/50 p-4 rounded-xl border border-cyan-100">
@@ -401,6 +446,12 @@ export default function DevToolsPage() {
                              <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Buy UOM</label><input name="purchase_uom" defaultValue={currentItem?.purchase_uom} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="ลัง"/></div>
                              <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Conv. Rate</label><input name="conversion_rate" type="number" step="0.01" defaultValue={currentItem?.conversion_rate || 1} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="1"/></div>
                              <div><label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Min Stock</label><input name="min_stock" type="number" defaultValue={currentItem?.min_stock || 10} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="10"/></div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-4">
+                             <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Lead Time (Days)</label><input name="lead_time" type="number" defaultValue={currentItem?.lead_time || 3} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="3"/></div>
+                             <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">MOQ (Buy Unit)</label><input name="moq" type="number" step="0.01" defaultValue={currentItem?.moq || 1} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="1"/></div>
+                             <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Vendor ID</label><input name="vendor_id" defaultValue={currentItem?.vendor_id || ''} className="w-full p-2.5 border border-slate-300 rounded-xl text-sm font-mono" placeholder="V-001"/></div>
                         </div>
                         
                         <div>

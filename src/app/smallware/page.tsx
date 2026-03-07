@@ -16,7 +16,10 @@ export default function SmallwareCatalog() {
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [locationFilter, setLocationFilter] = useState('ALL'); // 🟢 เพิ่ม State สำหรับ Location Filter
+  
   const [categories, setCategories] = useState<string[]>([]);
+  const [locations, setLocations] = useState<string[]>([]); // 🟢 เพิ่ม State สำหรับเก็บตัวเลือก Location ทั้งหมด
   
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -38,7 +41,8 @@ export default function SmallwareCatalog() {
       init();
   }, []);
 
-  useEffect(() => { setCurrentPage(1); }, [searchTerm, categoryFilter]);
+  // 🟢 รีเซ็ตหน้าเมื่อมีการเปลี่ยนฟิลเตอร์ใดๆ
+  useEffect(() => { setCurrentPage(1); }, [searchTerm, categoryFilter, locationFilter]);
 
   const fetchCatalog = async () => {
       setLoading(true);
@@ -60,13 +64,20 @@ export default function SmallwareCatalog() {
           });
 
           const cats = new Set<string>();
+          const locs = new Set<string>(); // 🟢 สร้าง Set เก็บ Location ที่ไม่ซ้ำกัน
+
           const processed = (prodData || []).map(prod => {
               if (prod.category) cats.add(prod.category);
+              
               const stockInfo = invMap[prod.product_id];
+              const actualLoc = stockInfo && stockInfo.locs.size > 0 ? Array.from(stockInfo.locs).join(', ') : prod.default_location || '-';
+              
+              if (actualLoc && actualLoc !== '-') locs.add(actualLoc); // 🟢 เก็บ Location ลง Set
+
               return {
                   ...prod,
                   current_qty: stockInfo ? stockInfo.qty : 0,
-                  actual_location: stockInfo && stockInfo.locs.size > 0 ? Array.from(stockInfo.locs).join(', ') : prod.default_location || '-'
+                  actual_location: actualLoc
               };
           });
 
@@ -78,6 +89,7 @@ export default function SmallwareCatalog() {
           });
 
           setCategories(Array.from(cats).sort());
+          setLocations(Array.from(locs).sort()); // 🟢 อัปเดตรายชื่อ Location ทั้งหมด
           setProducts(processed);
       } catch (error: any) {
           console.error(error); alert("Error: " + error.message);
@@ -117,12 +129,14 @@ export default function SmallwareCatalog() {
       e.target.value = ''; 
   };
 
+  // 🟢 อัปเดตตรรกะการฟิลเตอร์ให้รองรับ Location
   const filteredProducts = products.filter(product => {
       const nameStr = product.product_name || '';
       const idStr = product.product_id || '';
       const matchSearch = nameStr.toLowerCase().includes(searchTerm.toLowerCase()) || idStr.toLowerCase().includes(searchTerm.toLowerCase());
       const matchCat = categoryFilter === 'ALL' || product.category === categoryFilter;
-      return matchSearch && matchCat;
+      const matchLoc = locationFilter === 'ALL' || product.actual_location === locationFilter; // 🟢 ตรวจสอบเงื่อนไข Location
+      return matchSearch && matchCat && matchLoc;
   });
 
   const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
@@ -142,7 +156,7 @@ export default function SmallwareCatalog() {
                   </h1>
               </div>
               
-              <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
                   <select 
                       className="px-3 py-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 bg-white text-xs md:text-sm font-bold text-slate-700 shadow-sm cursor-pointer"
                       value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
@@ -150,6 +164,16 @@ export default function SmallwareCatalog() {
                       <option value="ALL">ทุกโซน (Zones)</option>
                       {categories.map(cat => <option key={cat} value={cat}>GHC: {cat}</option>)}
                   </select>
+                  
+                  {/* 🟢 Dropdown สำหรับกรอง Location */}
+                  <select 
+                      className="px-3 py-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white text-xs md:text-sm font-bold text-slate-700 shadow-sm cursor-pointer"
+                      value={locationFilter} onChange={e => setLocationFilter(e.target.value)}
+                  >
+                      <option value="ALL">ทุกห้อง (Locations)</option>
+                      {locations.map(loc => <option key={loc} value={loc}>{loc}</option>)}
+                  </select>
+
                   <div className="relative w-full sm:w-64">
                       <Search className="absolute left-3 top-2.5 text-slate-400" size={16}/>
                       <input 
