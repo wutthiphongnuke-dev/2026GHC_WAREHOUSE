@@ -103,7 +103,7 @@ export default function TransactionLogPage() {
               }
           }
 
-          setSyncProgress('กำลังประมวลผล (Processing)...');
+          setSyncProgress('กำลังประกอบข้อมูล MFG/EXP (แยกตารางป้องกัน Error)...');
           
           const uniqueTxMap = new Map();
           allTransactions.forEach(tx => {
@@ -111,8 +111,69 @@ export default function TransactionLogPage() {
           });
           const deduplicatedTransactions = Array.from(uniqueTxMap.values());
 
+          // 🟢 1. รวบรวม Doc Ref เฉพาะ INBOUND
+          const inboundDocRefs = [...new Set(
+              deduplicatedTransactions
+                  .filter(tx => tx.transaction_type === 'INBOUND')
+                  .map(tx => {
+                      let meta = tx.metadata;
+                      if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch(e){ meta = {}; } }
+                      
+                      let docRef = meta?.doc_no || '-';
+                      if (docRef === '-' && tx.remarks) {
+                          const match = tx.remarks.match(/(RCV-[\w-]+|PO-[\w-]+)/);
+                          if (match) docRef = match[0];
+                      }
+                      return docRef;
+                  })
+                  .filter(ref => ref !== '-')
+          )];
+
+          const inboundDetailsMap: Record<string, any> = {};
+          
+          // 🟢 2. ดึงข้อมูลแยกตาราง (Safe Query)
+          if (inboundDocRefs.length > 0) {
+              const chunkSize = 100; 
+              for (let i = 0; i < inboundDocRefs.length; i += chunkSize) {
+                  const chunk = inboundDocRefs.slice(i, i + chunkSize);
+                  
+                  // ดึงใบรับเข้า
+                  const { data: receipts } = await supabase
+                      .from('inbound_receipts')
+                      .select('receipt_id, document_reference, truck_temperature')
+                      .in('document_reference', chunk);
+                      
+                  if (receipts && receipts.length > 0) {
+                      const receiptIds = receipts.map((r: any) => r.receipt_id);
+                      
+                      // ดึงรายการย่อยของใบรับเข้า
+                      const { data: lines } = await supabase
+                          .from('inbound_lines')
+                          .select('receipt_id, product_id, mfg_date, exp_date, product_temperature')
+                          .in('receipt_id', receiptIds);
+                          
+                      receipts.forEach((r: any) => {
+                          const relatedLines = (lines || []).filter((l: any) => l.receipt_id === r.receipt_id);
+                          relatedLines.forEach((line: any) => {
+                              const key = `${r.document_reference}_${line.product_id}`;
+                              inboundDetailsMap[key] = {
+                                  mfg: line.mfg_date,
+                                  exp: line.exp_date,
+                                  pTemp: line.product_temperature,
+                                  vTemp: r.truck_temperature
+                              };
+                          });
+                      });
+                  }
+              }
+          }
+
+          setSyncProgress('กำลังประมวลผล (Processing)...');
+
           const formattedData = deduplicatedTransactions.map(tx => {
-              const meta = tx.metadata || {};
+              let meta = tx.metadata || {};
+              if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch(e){ meta = {}; } }
+
               let docRef = meta.doc_no || '-';
               if (docRef === '-' && tx.remarks) {
                   const match = tx.remarks.match(/(RCV-[\w-]+|PO-[\w-]+|TO-[\w-]+)/);
@@ -125,6 +186,10 @@ export default function TransactionLogPage() {
 
               const dateObj = new Date(tx.transaction_date);
               const pInfo = productMap[tx.product_id] || {};
+
+              // 🟢 ประกอบร่างข้อมูล
+              const inboundKey = `${docRef}_${tx.product_id}`;
+              const inboundDetail = inboundDetailsMap[inboundKey] || {};
 
               return {
                   ...tx,
@@ -143,7 +208,12 @@ export default function TransactionLogPage() {
                   orderedQty: meta.ordered_qty || 0, 
                   timingStatus: meta.time_status || '-', 
                   metadata: meta,
-                  anomalies 
+                  anomalies,
+                  // 🟢 ถ้าใน metadata มีเก็บไว้ใช้ก่อน ถ้าไม่มีไปดึงจาก Inbound Lines
+                  mfg_date: inboundDetail.mfg || null,
+                  exp_date: inboundDetail.exp || null,
+                  product_temp: meta.product_temp ?? inboundDetail.pTemp ?? null,
+                  vehicle_temp: meta.vehicle_temp ?? inboundDetail.vTemp ?? null,
               };
           });
 
@@ -291,47 +361,23 @@ export default function TransactionLogPage() {
       });
   }, [transactions, debouncedSearch, typeFilter, startDate, endDate, sortConfig]);
 
-  // 🚀 ฟังก์ชัน Export แบบใหม่ ดึงข้อมูลลึกถึง MFG/EXP อัตโนมัติ
+  // 🚀 ฟังก์ชัน Export
   const handleExport = async () => {
       if (filteredData.length === 0) return alert("ไม่มีข้อมูลสำหรับ Export");
       
-      setActionLoading(true); // เปิดหน้าต่าง Loading ป้องกันคนกดเบิ้ล
+      setActionLoading(true); 
       try {
           const wb = XLSX.utils.book_new();
 
           // --- 1. แยกข้อมูล INBOUND ---
           const inboundData = filteredData.filter(tx => tx.transaction_type === 'INBOUND');
-          let inboundLinesMap: Record<string, any> = {};
 
           if (inboundData.length > 0) {
-              // 🟢 ดึงข้อมูล MFG / EXP จากตาราง inbound_receipts & inbound_lines มาประกอบร่าง (ดึงเฉพาะ DocRef ที่มีอยู่)
-              const docNos = [...new Set(inboundData.map(tx => tx.docRef).filter(ref => ref !== '-'))];
-              
-              if (docNos.length > 0) {
-                  const { data: receipts, error } = await supabase
-                      .from('inbound_receipts')
-                      .select('document_reference, inbound_lines(product_id, mfg_date, exp_date)')
-                      .in('document_reference', docNos);
-
-                  if (!error && receipts) {
-                      receipts.forEach((r: any) => {
-                          r.inbound_lines?.forEach((line: any) => {
-                              // จับคู่ด้วยเลข Doc + Product ID
-                              const key = `${r.document_reference}_${line.product_id}`;
-                              inboundLinesMap[key] = { mfg: line.mfg_date, exp: line.exp_date };
-                          });
-                      });
-                  }
-              }
-
               const inExport = inboundData.map(tx => {
                   const baseQty = Math.abs(tx.qty);
                   const convRate = tx.conversion_rate || 1;
                   const rcvLargeQty = baseQty / convRate; 
                   const ordLargeQty = tx.orderedQty ? (tx.orderedQty / convRate) : rcvLargeQty;
-
-                  // ดึง MFG / EXP ที่ได้มาจาก Database เมื่อกี้
-                  const lineInfo = inboundLinesMap[`${tx.docRef}_${tx.product_id}`] || {};
 
                   return {
                       'วันที่ (Date)': tx.dateObj.toLocaleDateString('th-TH'),
@@ -347,10 +393,10 @@ export default function TransactionLogPage() {
                       'ยอดเข้าสต๊อก (Base Qty)': baseQty,
                       'หน่วยย่อย (Base UOM)': tx.base_uom,
                       'อัตราแปลง (Conversion)': `1 ${tx.purchase_uom} = ${convRate} ${tx.base_uom}`,
-                      'อุณหภูมิรถ (°C)': tx.metadata?.vehicle_temp ?? '-',     // 🟢 ข้อมูล Temp รถ
-                      'อุณหภูมิสินค้า (°C)': tx.metadata?.product_temp ?? '-',   // 🟢 ข้อมูล Temp สินค้า
-                      'วันที่ผลิต (MFG)': lineInfo.mfg ? new Date(lineInfo.mfg).toLocaleDateString('en-GB') : '-', // 🟢 ข้อมูลวันผลิต
-                      'วันหมดอายุ (EXP)': lineInfo.exp ? new Date(lineInfo.exp).toLocaleDateString('en-GB') : '-', // 🟢 ข้อมูลหมดอายุ
+                      'อุณหภูมิรถ (°C)': tx.vehicle_temp ?? '-',     
+                      'อุณหภูมิสินค้า (°C)': tx.product_temp ?? '-',   
+                      'วันที่ผลิต (MFG)': tx.mfg_date ? new Date(tx.mfg_date).toLocaleDateString('en-GB') : '-', 
+                      'วันหมดอายุ (EXP)': tx.exp_date ? new Date(tx.exp_date).toLocaleDateString('en-GB') : '-', 
                       'คงเหลือ (Balance)': tx.balance,
                       'สถานะส่ง (Timing)': tx.timingStatus,
                       'หมายเหตุ (Remarks)': tx.remarks || '-',
@@ -504,7 +550,7 @@ export default function TransactionLogPage() {
                         <tr><td colSpan={6} className="p-12 text-center text-slate-400"><FileText size={40} className="opacity-20 mx-auto mb-2"/>ไม่พบข้อมูลที่ค้นหา</td></tr>
                     ) : currentData.map((tx, idx) => {
                         const isPO = tx.transaction_type === 'INBOUND';
-                        const isOut = tx.transaction_type.includes('OUT');
+                        const isOut = tx.transaction_type.includes('OUT') || tx.transaction_type.includes('DISP');
                         
                         return (
                         <tr key={`${tx.transaction_id}-${idx}`} className="transition-colors align-middle hover:bg-blue-50/30 group">
@@ -531,6 +577,15 @@ export default function TransactionLogPage() {
                                 </div>
                                 <div className="text-xs text-slate-500 mt-0.5 truncate max-w-[280px]" title={tx.product_name}>{tx.product_name}</div>
                                 {tx.branch_name && isOut && <div className="mt-1.5 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded w-max"><Store size={10} className="inline mr-1"/>{tx.branch_name}</div>}
+                                
+                                {/* 🟢 NEW: แสดงผล MFG / EXP / Temp ในตาราง */}
+                                {isPO && (tx.mfg_date || tx.exp_date || tx.product_temp !== null || tx.vehicle_temp !== null) && (
+                                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                                        {tx.mfg_date && <span className="text-[9px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200" title="วันผลิต (MFG)">MFG: {new Date(tx.mfg_date).toLocaleDateString('en-GB')}</span>}
+                                        {tx.exp_date && <span className="text-[9px] font-medium text-rose-500 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100" title="วันหมดอายุ (EXP)">EXP: {new Date(tx.exp_date).toLocaleDateString('en-GB')}</span>}
+                                        {tx.product_temp !== null && <span className="text-[9px] font-medium text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100" title="อุณหภูมิสินค้า (Product Temp)">P.Temp: {tx.product_temp}°C</span>}
+                                    </div>
+                                )}
                             </td>
                             
                             <td className={`p-3 text-right pr-6 bg-slate-50/50 border-x border-slate-100/50 ${tx.qty > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
@@ -554,13 +609,12 @@ export default function TransactionLogPage() {
                                         <FileCheck size={16}/>
                                     </button>
                                     
-                                    {/* 🟢 ปุ่ม Edit และ Delete สำหรับ Admin/Staff */}
                                     {userRole !== 'VIEWER' && (
                                         <>
                                             <button onClick={() => {
                                                 setEditModal(tx);
                                                 setEditQty(Math.abs(tx.qty).toString());
-                                                setEditPoNumber(tx.poNumber !== '-' ? tx.poNumber : ''); // โหลดเลข PO เดิมมาใส่ช่อง
+                                                setEditPoNumber(tx.poNumber !== '-' ? tx.poNumber : ''); 
                                                 setEditRemarks('');
                                             }} className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-amber-500 hover:text-white hover:bg-amber-500 hover:border-amber-500 transition-colors shadow-sm" title="Edit Transaction">
                                                 <Edit2 size={16}/>
@@ -607,7 +661,6 @@ export default function TransactionLogPage() {
                           <div className="text-xs text-slate-500 truncate mt-0.5">{editModal.product_name}</div>
                       </div>
 
-                      {/* 🟢 ช่องกรอกเลข PO (จะโชว์ให้แก้เฉพาะรายการ Inbound) */}
                       {editModal.transaction_type === 'INBOUND' && (
                           <div>
                               <label className="text-xs font-bold text-blue-600 mb-1.5 flex items-center gap-1"><Receipt size={14}/> เพิ่ม/แก้ไข เลข PO อ้างอิง</label>
@@ -693,6 +746,7 @@ export default function TransactionLogPage() {
                               <span className="text-slate-500">PO Number</span><span className="font-mono font-bold text-blue-600">{receiptModal.poNumber}</span>
                           </div>
                       )}
+                      
                       <div className="flex justify-between border-b border-slate-100 pb-3 mt-2">
                           <span className="text-slate-500">Product</span>
                           <div className="text-right">
@@ -700,6 +754,17 @@ export default function TransactionLogPage() {
                               <div className="text-[10px] text-slate-400 font-mono mt-0.5">{receiptModal.product_id}</div>
                           </div>
                       </div>
+
+                      {/* 🟢 NEW: แสดงรายละเอียด MFG/EXP ในใบเสร็จรับเข้า */}
+                      {receiptModal.transaction_type === 'INBOUND' && (receiptModal.mfg_date || receiptModal.exp_date || receiptModal.product_temp !== null) && (
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 mt-2 space-y-1.5">
+                              {receiptModal.mfg_date && <div className="flex justify-between text-xs"><span className="text-slate-500">MFG Date</span><span className="font-medium text-slate-700">{new Date(receiptModal.mfg_date).toLocaleDateString('en-GB')}</span></div>}
+                              {receiptModal.exp_date && <div className="flex justify-between text-xs"><span className="text-slate-500">EXP Date</span><span className="font-medium text-rose-600">{new Date(receiptModal.exp_date).toLocaleDateString('en-GB')}</span></div>}
+                              {receiptModal.vehicle_temp !== null && <div className="flex justify-between text-xs"><span className="text-slate-500">Vehicle Temp</span><span className="font-medium text-blue-600">{receiptModal.vehicle_temp} °C</span></div>}
+                              {receiptModal.product_temp !== null && <div className="flex justify-between text-xs"><span className="text-slate-500">Product Temp</span><span className="font-medium text-blue-600">{receiptModal.product_temp} °C</span></div>}
+                          </div>
+                      )}
+
                       <div className="flex justify-between border-b border-slate-100 pb-2 mt-2">
                           <span className="text-slate-500">Quantity</span>
                           <span className={`font-black text-lg ${receiptModal.qty > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{receiptModal.qty > 0 ? '+' : ''}{receiptModal.qty} {receiptModal.base_uom}</span>
@@ -725,77 +790,6 @@ export default function TransactionLogPage() {
                   </div>
                   <div className="p-4 bg-slate-50 border-t border-slate-200">
                       <button onClick={()=>setReceiptModal(null)} className="w-full py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-black transition-colors text-sm shadow-md">ปิดหน้าต่าง (Close)</button>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      {/* ======================================================= */}
-      {/* 🗺️ MODAL: PRODUCT JOURNEY */}
-      {/* ======================================================= */}
-      {journeyModal && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 animate-fade-in">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
-                  <div className="p-5 border-b bg-indigo-50 flex justify-between items-center">
-                      <div>
-                          <h3 className="font-bold text-indigo-900 text-lg flex items-center gap-2"><GitBranch size={20}/> Product Journey Timeline</h3>
-                          <div className="flex items-center gap-2 mt-1">
-                              <span className="bg-white border border-indigo-200 text-indigo-700 text-[10px] font-mono px-2 py-0.5 rounded font-bold">{journeyModal.product_id}</span>
-                              <span className="text-sm font-bold text-indigo-800">{journeyModal.product_name}</span>
-                          </div>
-                      </div>
-                      <button onClick={()=>setJourneyModal(null)} className="text-indigo-400 hover:text-rose-500 p-2 bg-white rounded-full shadow-sm"><X size={20}/></button>
-                  </div>
-
-                  <div className="flex-1 overflow-auto p-6 bg-slate-50 custom-scrollbar">
-                      {journeyLoading ? (
-                          <div className="flex flex-col items-center justify-center h-40 text-indigo-500"><Activity className="animate-spin mb-2"/><span className="text-sm font-bold tracking-widest">Tracing Data...</span></div>
-                      ) : (
-                          <div className="relative border-l-2 border-indigo-200 ml-4 space-y-6 pb-4">
-                              {journeyData.map((j, i) => {
-                                  const isOut = j.transaction_type.includes('OUT');
-                                  const isIn = j.transaction_type === 'INBOUND';
-                                  const bName = branchMap[j.branch_id] || j.branch_id;
-                                  
-                                  return (
-                                  <div key={i} className="relative pl-6 group">
-                                      <div className={`absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-white ${isIn ? 'bg-emerald-500' : isOut ? 'bg-rose-500' : 'bg-amber-500'} shadow-sm group-hover:scale-125 transition-transform`}></div>
-                                      
-                                      <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm hover:shadow-md transition-shadow">
-                                          <div className="flex justify-between items-start mb-2">
-                                              <div className="flex items-center gap-2">
-                                                  <span className={`text-[10px] font-black px-2 py-0.5 rounded uppercase ${isIn ? 'bg-emerald-100 text-emerald-700' : isOut ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
-                                                      {j.transaction_type}
-                                                  </span>
-                                                  {j.metadata?.is_edited && <span className="text-[8px] bg-amber-100 text-amber-700 px-1 py-0.5 rounded font-bold border border-amber-200">EDITED</span>}
-                                                  <span className="text-xs text-slate-400 flex items-center gap-1 font-mono"><Clock size={12}/> {new Date(j.transaction_date).toLocaleString('th-TH')}</span>
-                                              </div>
-                                              <div className={`font-black text-lg ${Number(j.quantity_change) > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                                  {Number(j.quantity_change) > 0 ? '+' : ''}{j.quantity_change}
-                                              </div>
-                                          </div>
-                                          
-                                          <div className="text-sm text-slate-700 font-medium mb-2">
-                                              {isIn ? "รับสินค้าเข้าคลัง" : isOut ? `จัดส่งไปยังสาขา: ${bName || 'ไม่ระบุ'}` : "ปรับปรุงยอดสต๊อก / Cycle Count"}
-                                          </div>
-
-                                          <div className="flex justify-between items-end mt-3 pt-3 border-t border-slate-100 border-dashed">
-                                              <div className="text-[10px] text-slate-400 truncate max-w-[250px]" title={j.remarks}>
-                                                  📝 {j.remarks || 'ไม่มีหมายเหตุ'}
-                                              </div>
-                                              <div className="text-xs font-bold text-slate-800 bg-slate-100 px-2 py-1 rounded-lg">
-                                                  Balance: {j.balance_after}
-                                              </div>
-                                          </div>
-                                      </div>
-                                  </div>
-                              )})}
-                              <div className="relative pl-6">
-                                  <div className="absolute -left-[7px] top-1 w-3 h-3 bg-slate-300 rounded-full border-2 border-white"></div>
-                                  <div className="text-xs font-bold text-slate-400">จุดเริ่มต้นการบันทึกประวัติ (End of History)</div>
-                              </div>
-                          </div>
-                      )}
                   </div>
               </div>
           </div>

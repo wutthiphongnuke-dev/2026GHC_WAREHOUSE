@@ -54,7 +54,6 @@ const Inbound = () => {
   const [exportStart, setExportStart] = useState<string>(todayStr);
   const [exportEnd, setExportEnd] = useState<string>(todayStr);
 
-  // 🟢 State สำหรับหน้าแก้ไข PO
   const [showEditPOModal, setShowEditPOModal] = useState<boolean>(false);
   const [editPOData, setEditPOData] = useState({ vendor_id: '', delivery_date: '' });
 
@@ -192,7 +191,7 @@ const Inbound = () => {
                 if (!cleanPoNo) return; 
                 
                 const cleanItem = String(rawItem || '').trim();
-                if (!cleanItem) return;
+                if (!cleanItem) return; 
 
                 const cleanVendor = String(rawVendor || '').trim() || 'UNKNOWN_VENDOR';
                 incomingVendors.add(cleanVendor);
@@ -416,7 +415,6 @@ const Inbound = () => {
     setLoading(false);
   };
 
-  // 🟢 ฟังก์ชันบันทึกการแก้ไข PO
   const handleSaveEditedPO = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPO) return;
@@ -436,7 +434,6 @@ const Inbound = () => {
         setShowEditPOModal(false);
         fetchPendingPOs();
         
-        // อัปเดตข้อมูลบนหน้าจอทันที
         const vendorObj = vendors.find(v => v.vendor_id === editPOData.vendor_id);
         setFormData(prev => ({
             ...prev,
@@ -577,10 +574,11 @@ const Inbound = () => {
       );
   }, [cart, cartSearchTerm]);
 
+  // 🚀 1. ฟังก์ชันรับเข้า (อัปเกรดแยกเซฟทีละตาราง ดักจับ Error 100%)
   const handleSubmit = async () => {
     if (isViewer) return alert("ไม่มีสิทธิ์ทำรายการ (View Only)");
-    if (cart.length === 0) return alert("No items.");
-    if (!formData.vendorId && activeTab === 'manual') return alert("Select Vendor.");
+    if (cart.length === 0) return alert("ไม่มีสินค้าในตะกร้า");
+    if (!formData.vendorId && activeTab === 'manual') return alert("กรุณาเลือกผู้จัดจำหน่าย (Vendor)");
     
     const hasOverReceive = cart.some(item => parseFloat(item.qtyReceived) > parseFloat(item.qtyOrdered) && parseFloat(item.qtyOrdered) > 0);
     if (hasOverReceive) {
@@ -595,6 +593,7 @@ const Inbound = () => {
     try {
         const actualPoNumber = (activeTab === 'po' && selectedPO) ? selectedPO.po_number : null;
 
+        // 1. สร้างหัวบิล Inbound Receipt
         const { data: receiptData, error: receiptError } = await supabase
             .from('inbound_receipts')
             .insert([{
@@ -606,7 +605,7 @@ const Inbound = () => {
             .select('receipt_id')
             .single();
             
-        if (receiptError) throw new Error("inbound_receipts error: " + receiptError.message);
+        if (receiptError) throw new Error("เกิดข้อผิดพลาดในการสร้างใบรับเข้า (inbound_receipts): " + receiptError.message);
         const newReceiptId = receiptData.receipt_id;
 
         const inboundLinesToInsert = [];
@@ -650,8 +649,7 @@ const Inbound = () => {
                 exp_date: safeExpDate,
                 receive_unit: item.recvUnit,
                 conversion_rate: convRate,
-                base_qty: baseQty
-            });
+                });
 
             const lotKey = `${item.productId}_${item.location}_${safeMfgDate}_${safeExpDate}_${item.lotStatus}`;
             const existingLot = lotsMap.get(lotKey);
@@ -701,33 +699,46 @@ const Inbound = () => {
             });
         }
 
-        const promises = [];
-        if (inboundLinesToInsert.length > 0) promises.push(supabase.from('inbound_lines').insert(inboundLinesToInsert));
+        // 🟢 2. รันคำสั่งเซฟลง Database แยกทีละตาราง เพื่อให้แจ้ง Error ได้ถ้ามีคอลัมน์ผิด
+        if (inboundLinesToInsert.length > 0) {
+            const { error: lineErr } = await supabase.from('inbound_lines').insert(inboundLinesToInsert);
+            // 🚨 ถ้าเกิด Error ขึ้น (เช่น คอลัมน์ receive_unit ไม่มีในตาราง) ระบบจะหยุดและแจ้งให้ทราบทันที
+            if (lineErr) throw new Error("เกิดข้อผิดพลาดการบันทึกรายการรับเข้า (inbound_lines): " + lineErr.message);
+        }
+
         const lotsToUpsert = Array.from(lotsToUpsertMap.values());
-        if (lotsToUpsert.length > 0) promises.push(supabase.from('inventory_lots').upsert(lotsToUpsert));
-        if (logsToInsert.length > 0) promises.push(supabase.from('transactions_log').insert(logsToInsert));
+        if (lotsToUpsert.length > 0) {
+            const { error: lotErr } = await supabase.from('inventory_lots').upsert(lotsToUpsert);
+            if (lotErr) throw new Error("เกิดข้อผิดพลาดการอัปเดตสต๊อก (inventory_lots): " + lotErr.message);
+        }
+
+        if (logsToInsert.length > 0) {
+            const { error: logErr } = await supabase.from('transactions_log').insert(logsToInsert);
+            if (logErr) throw new Error("เกิดข้อผิดพลาดการบันทึกประวัติ (transactions_log): " + logErr.message);
+        }
 
         const itemsWithNewLoc = cart.filter(item => !item.isAutoLocation && !isViewer);
         if (itemsWithNewLoc.length > 0) {
             const uniqueLocs: Record<string, string> = {};
             itemsWithNewLoc.forEach(i => uniqueLocs[i.productId] = i.location);
-            Object.entries(uniqueLocs).forEach(([pid, loc]) => {
-                promises.push(supabase.from('master_products').update({ default_location: loc }).eq('product_id', pid));
-            });
+            for (const [pid, loc] of Object.entries(uniqueLocs)) {
+                const { error: locErr } = await supabase.from('master_products').update({ default_location: loc }).eq('product_id', pid);
+                if (locErr) throw new Error("เกิดข้อผิดพลาดการอัปเดต Location สินค้า: " + locErr.message);
+            }
         }
 
-        await Promise.all(promises);
-
+        // 🟢 3. อัปเดตสถานะ PO (ถ้ามี)
         if (activeTab === 'po' && selectedPO) {
             let isAllComplete = true;
-            const poPromises = [];
 
             for (const item of cart) {
                 const poLine = selectedPO.po_lines.find((l: any) => l.product_id === item.productId);
                 if (poLine) {
                     const newReceived = parseFloat(poLine.received_qty) + (parseFloat(item.qtyReceived) || 0);
                     if (newReceived < parseFloat(poLine.ordered_qty)) isAllComplete = false;
-                    poPromises.push(supabase.from('po_lines').update({ received_qty: newReceived }).eq('po_line_id', poLine.po_line_id));
+                    
+                    const { error: poLineErr } = await supabase.from('po_lines').update({ received_qty: newReceived }).eq('po_line_id', poLine.po_line_id);
+                    if (poLineErr) throw new Error("อัปเดตยอดรับ PO ย่อยล้มเหลว: " + poLineErr.message);
                 }
             }
 
@@ -737,8 +748,8 @@ const Inbound = () => {
             });
 
             const newStatus = isAllComplete ? 'COMPLETED' : 'PARTIAL';
-            poPromises.push(supabase.from('purchase_orders').update({ status: newStatus }).eq('po_number', selectedPO.po_number));
-            await Promise.all(poPromises);
+            const { error: poErr } = await supabase.from('purchase_orders').update({ status: newStatus }).eq('po_number', selectedPO.po_number);
+            if (poErr) throw new Error("อัปเดตสถานะ PO หลักล้มเหลว: " + poErr.message);
         }
 
         if (window.confirm("🎉 รับเข้าสำเร็จอย่างรวดเร็ว!\n\nต้องการไปที่หน้า [Print Labels] เพื่อพิมพ์บาร์โค้ดสำหรับสินค้าล็อตนี้เลยหรือไม่?")) {
@@ -759,7 +770,7 @@ const Inbound = () => {
         setVendorSearchInput('');
         fetchPendingPOs(); 
 
-    } catch (error: any) { alert("🚨 Error: " + error.message); }
+    } catch (error: any) { alert("🚨 ระบบแจ้งเตือนข้อผิดพลาด:\n\n" + error.message); }
     setLoading(false);
   };
 
@@ -932,7 +943,6 @@ const Inbound = () => {
                     <div className="col-span-1 lg:border-r border-slate-100 relative group">
                         <label className="text-[9px] md:text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1">
                             PO Number
-                            {/* 🟢 ปุ่มดินสอแก้ไขข้อมูล PO เด้งขึ้นมาเมื่อชี้ */}
                             {activeTab === 'po' && selectedPO && !isViewer && (
                                 <button onClick={() => {
                                     setEditPOData({ vendor_id: selectedPO.vendor_id, delivery_date: selectedPO.delivery_date });
@@ -1105,7 +1115,6 @@ const Inbound = () => {
         </div>
       </div>
 
-      {/* 🟢 หน้าต่าง Modal สำหรับส่งออก Excel (ของเดิม) */}
       {showExportModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden flex flex-col">
@@ -1136,7 +1145,6 @@ const Inbound = () => {
         </div>
       )}
 
-      {/* 🟢 หน้าต่าง Modal สำหรับแก้ไขข้อมูล PO (เพิ่มใหม่) */}
       {showEditPOModal && selectedPO && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col">
