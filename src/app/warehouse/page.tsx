@@ -60,26 +60,25 @@ export default function Inventory() {
 
   const isViewer = userRole === 'VIEWER';
 
-  // 🟢 1. FETCH DATA
+  // 🟢 1. FETCH DATA (อัปเดตให้ดึง Location/Shelf จาก Master Data 100%)
   const fetchData = async () => {
     setLoading(true);
     setSyncProgress('กำลังเตรียมข้อมูล...');
     try {
         const [prodRes, lotsRes] = await Promise.all([
             supabase.from('master_products').select('*'),
-            supabase.from('inventory_lots').select('product_id, quantity, storage_location')
+            supabase.from('inventory_lots').select('product_id, quantity')
         ]);
         
         if (prodRes.error) throw prodRes.error;
         const allProducts = prodRes.data || [];
         const lotsData = lotsRes.data || [];
 
-        // เตรียมข้อมูลสต๊อกปัจจุบัน
-        const invMap: Record<string, { total_qty: number, locations: Set<string> }> = {};
+        // เตรียมข้อมูลสต๊อกปัจจุบัน (นับเฉพาะจำนวน ไม่สนใจ Location ใน Lot อีกต่อไป)
+        const invMap: Record<string, { total_qty: number }> = {};
         lotsData.forEach((lot: any) => {
-            if (!invMap[lot.product_id]) invMap[lot.product_id] = { total_qty: 0, locations: new Set() };
+            if (!invMap[lot.product_id]) invMap[lot.product_id] = { total_qty: 0 };
             invMap[lot.product_id].total_qty += Number(lot.quantity) || 0;
-            if (lot.storage_location) invMap[lot.product_id].locations.add(lot.storage_location);
         });
 
         const dateLimit = new Date();
@@ -139,16 +138,18 @@ export default function Inventory() {
         });
 
         const processed = allProducts.map((product: any) => {
-            const stockInfo = invMap[product.product_id] || { total_qty: 0, locations: new Set() };
+            const stockInfo = invMap[product.product_id] || { total_qty: 0 };
             const currentStock = stockInfo.total_qty;
-            const locationStr = stockInfo.locations.size > 0 ? Array.from(stockInfo.locations).join(', ') : (product.default_location || '-');
+            
+            // 🟢 ดึง Location และ Shelf จาก Master Database 100%
+            const locationStr = product.default_location || '-';
+            const shelfStr = product.shelf_position || '-';
 
             const stats = txStatsMap[product.product_id] || { in: 0, out: 0 };
             const totalIn = stats.in;
             const totalOut = stats.out;
 
             const avgDailyOut = totalOut / calcPeriod;
-            // 🟢 คำนวณจำนวนวันที่อยู่ได้ (สินค้าที่มี / ค่าเฉลี่ยจ่าย)
             const daysSupply = avgDailyOut > 0 ? Math.floor(currentStock / avgDailyOut) : (currentStock > 0 ? 999 : 0);
             const sellThrough = (totalOut + currentStock) > 0 ? (totalOut / (currentStock + totalOut)) * 100 : 0;
 
@@ -158,7 +159,6 @@ export default function Inventory() {
             else if (totalOut === 0 && calcPeriod >= 14) status = 'Dead Stock';
             else if (sellThrough < 10 && calcPeriod >= 14) status = 'Slow Moving';
 
-            // 🟢 คำนวณวันหมดอายุสต๊อก
             const today = new Date();
             const depleteDate = new Date(today);
             depleteDate.setDate(today.getDate() + daysSupply);
@@ -170,9 +170,9 @@ export default function Inventory() {
                 category: product.category || 'Uncategorized',
                 current_qty: currentStock,
                 unit: product.base_uom || 'Piece',
-                location: locationStr,
-                default_location: product.default_location || '-', 
-                shelf_position: product.shelf_position || '-', 
+                location: locationStr, // ค่าจาก Master DB
+                default_location: locationStr, 
+                shelf_position: shelfStr, // ค่าจาก Master DB
                 total_in: totalIn,
                 total_out: totalOut,
                 avg_daily: avgDailyOut,
@@ -200,7 +200,8 @@ export default function Inventory() {
           const newLotQty = Number(lots[0].quantity) + diff;
           await supabase.from('inventory_lots').update({ quantity: newLotQty, last_updated: new Date().toISOString() }).eq('lot_id', lots[0].lot_id);
       } else {
-          await supabase.from('inventory_lots').insert([{ product_id: productId, quantity: newQty, storage_location: defaultLoc }]);
+          // ถ้าไม่มี Lot เก่า ให้ใช้ default_location จาก Master Product
+          await supabase.from('inventory_lots').insert([{ product_id: productId, quantity: newQty, storage_location: defaultLoc || 'MAIN_WH' }]);
       }
 
       await supabase.from('transactions_log').insert([{
@@ -233,6 +234,9 @@ export default function Inventory() {
       const exportData = sortedData.map(item => ({
           'รหัสสินค้า (Product ID)': item.product_id,
           'ชื่อสินค้า (Product Name)': item.product_name,
+          'Location (ห้อง)': item.location,          // ✅ ดึงจากฐานข้อมูลหลักมาแสดงใน Excel ให้ดูง่าย
+          'Shelf (ชั้นวาง)': item.shelf_position,       // ✅ ดึงจากฐานข้อมูลหลักมาแสดงใน Excel ให้ดูง่าย
+          'หน่วย (Unit)': item.unit,                  // ✅ ดึงจากฐานข้อมูลหลักมาแสดงใน Excel ให้ดูง่าย
           'ยอดสต๊อกปัจจุบัน (Current Qty)': item.current_qty,
           'ยอดสต๊อกใหม่ (New Qty)': '', 
           'เหตุผลการปรับยอด (Reason)': 'Audit Check'
@@ -256,6 +260,7 @@ export default function Inventory() {
               
               const changes: any[] = [];
               rows.forEach((row: any) => {
+                  // 🟢 รับเฉพาะข้อมูลที่จำเป็น (รหัส, ยอดใหม่, หมายเหตุ) ข้าม Location/Shelf ใน Excel ไปเลย
                   const pid = String(row['รหัสสินค้า (Product ID)'] || row['Product ID'] || row['product_id'] || '').trim();
                   const newQty = parseFloat(row['ยอดสต๊อกใหม่ (New Qty)'] || row['New Qty']);
                   const reason = String(row['เหตุผลการปรับยอด (Reason)'] || row['Reason'] || 'Bulk Import Adjustment');
@@ -270,7 +275,9 @@ export default function Inventory() {
                               new_qty: newQty,
                               diff: newQty - currentItem.current_qty,
                               reason: reason,
-                              default_location: currentItem.default_location 
+                              default_location: currentItem.default_location,
+                              shelf_position: currentItem.shelf_position,
+                              unit: currentItem.unit
                           });
                       }
                   }
@@ -325,7 +332,7 @@ export default function Inventory() {
                       lotsToUpsert.push({
                           lot_id: targetLot.lot_id,
                           product_id: item.product_id,
-                          storage_location: targetLot.storage_location, 
+                          storage_location: targetLot.storage_location, // เก็บของในกล่องเดิมที่มีอยู่
                           quantity: Number(targetLot.quantity) + diff,
                           last_updated: now
                       });
@@ -333,7 +340,7 @@ export default function Inventory() {
                       lotsToInsert.push({
                           product_id: item.product_id,
                           quantity: newQty,
-                          storage_location: item.default_location || '-', 
+                          storage_location: item.default_location || 'MAIN_WH', // หากไม่เคยมีสต๊อก ให้ดึงห้องตั้งต้นจาก Master Data
                           last_updated: now
                       });
                   }
@@ -376,7 +383,6 @@ export default function Inventory() {
   };
 
   const handleExportReport = () => {
-      // 🟢 อัปเดตคอลัมน์ Export ให้สอดคล้องกับวันที่คาดว่าจะหมด
       const exportData = sortedData.map(item => ({
           'รหัส': item.product_id,
           'ชื่อสินค้า': item.product_name,
@@ -558,7 +564,6 @@ export default function Inventory() {
                         <th className="p-3 text-center text-rose-700 bg-rose-50">Outbound</th>
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('avg_daily')}>Avg Out/Day</th>
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('sell_through')}>Sell-Through</th>
-                        {/* 🟢 อัปเดตส่วน Header เพื่อแสดงวันที่จ่ายได้ถึง */}
                         <th className="p-3 text-center cursor-pointer hover:bg-slate-200" onClick={() => handleSort('days_supply')}>
                             <div className="flex flex-col items-center">
                                 <span>สินค้าจ่ายได้ถึง</span>
@@ -606,7 +611,6 @@ export default function Inventory() {
                                     </div>
                                 </td>
                                 
-                                {/* 🟢 อัปเดตส่วนแสดงผลวันที่หมด */}
                                 <td className="p-3 text-center">
                                     <span className={`px-2 py-1 rounded font-bold text-sm ${item.days_supply <= alertDays && !showArchived ? 'text-rose-700 bg-rose-100 animate-pulse' : 'text-slate-700'}`}>
                                         {item.current_qty <= 0 
@@ -615,7 +619,6 @@ export default function Inventory() {
                                                 ? 'Safe (>1 ปี)' 
                                                 : item.depletion_date.split('-').reverse().join('/')}
                                     </span>
-                                    {/* 🟢 แสดงจำนวนวันเล็กๆ ไว้ด้านล่างให้ดูง่ายๆ */}
                                     {item.current_qty > 0 && item.days_supply <= 365 && (
                                         <div className="text-[9px] font-bold text-slate-400 mt-0.5">
                                             (เหลือ {item.days_supply} วัน)
@@ -706,7 +709,7 @@ export default function Inventory() {
           </div>
       )}
 
-      {/* --- BULK ADJUST PREVIEW MODAL (SECURE & FAST) --- */}
+      {/* --- BULK ADJUST PREVIEW MODAL --- */}
       {isBulkPreviewOpen && !isViewer && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden">
@@ -723,6 +726,7 @@ export default function Inventory() {
                           <thead className="bg-slate-100 text-slate-600 uppercase text-xs">
                               <tr>
                                   <th className="p-3 pl-4">Product Info</th>
+                                  <th className="p-3 text-center">Unit</th>
                                   <th className="p-3 text-center bg-slate-50">Old Qty</th>
                                   <th className="p-3 text-center bg-amber-50 text-amber-700">New Qty</th>
                                   <th className="p-3 text-right border-l">Change (Diff)</th>
@@ -735,7 +739,10 @@ export default function Inventory() {
                                       <td className="p-3 pl-4">
                                           <div className="font-bold text-slate-800">{item.product_id}</div>
                                           <div className="text-xs text-slate-500 truncate w-48">{item.product_name}</div>
+                                          {/* แสดง Location / Shelf เพื่อให้เห็นชัดเจนว่าผูกกับ Master Database ถูกต้องแล้ว */}
+                                          <div className="text-[10px] text-slate-400 mt-0.5">Loc: {item.default_location} | Shelf: {item.shelf_position}</div>
                                       </td>
+                                      <td className="p-3 text-center text-slate-500 font-bold">{item.unit}</td>
                                       <td className="p-3 text-center text-slate-400 font-mono bg-slate-50">{item.old_qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                       <td className="p-3 text-center font-bold text-amber-700 bg-amber-50/50">{item.new_qty.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                       <td className={`p-3 text-right font-bold border-l ${item.diff > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
