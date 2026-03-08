@@ -47,12 +47,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         const role = roleData?.role || 'VIEWER';
         setUserRole(role);
 
-        // 🟢 เพิ่ม /master-data เข้าไปในลิสต์ที่ VIEWER ห้ามเข้า
+        // 🟢 อัปเดตสิทธิ์: ให้พนักงาน (STAFF) สามารถเข้าถึง /dev-tools ได้ เพราะเป็นหน้า Master Data ใหม่
         if (role === 'VIEWER') {
-          const blockedForViewer = ['/inbound', '/outbound', '/transactions', '/cycle-count', '/print-labels', '/planning', '/forecast-studio', '/master-data', '/dev-tools', '/advanced-dashboard'];
+          const blockedForViewer = ['/inbound', '/outbound', '/transactions', '/cycle-count', '/print-labels', '/planning', '/forecast-studio', '/dev-tools', '/advanced-dashboard'];
           if (blockedForViewer.some(route => pathname.startsWith(route))) router.push('/dashboard'); 
         } else if (role === 'STAFF') {
-          const blockedForStaff = ['/dev-tools', '/advanced-dashboard'];
+          const blockedForStaff = ['/advanced-dashboard'];
           if (blockedForStaff.some(route => pathname.startsWith(route))) router.push('/dashboard');
         }
       }
@@ -157,13 +157,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </Link>
 
               {/* ========================================================= */}
-              {/* 💻 DESKTOP MENU (GROUPED DROPDOWNS) */}
+              {/* 💻 DESKTOP MENU */}
               {/* ========================================================= */}
               <div className="hidden lg:flex items-center flex-1 justify-start xl:justify-center px-2">
                 
                 <NavItem href="/dashboard" icon={<LayoutDashboard size={16} />} label="Dashboard" />           
                 
-                {/* 📦 กลุ่มคลังสินค้า */}
                 <NavDropdown title="Inventory" icon={<Package size={16} />}>
                   <DropdownItem href="/warehouse" icon={<Package size={16} />} label="Stock Balance" />
                   <DropdownItem href="/smallware" icon={<ImageIcon size={16} />} label="Visual Catalog (รูปภาพ)" />
@@ -175,7 +174,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   )}
                 </NavDropdown>
                 
-                {/* 🔄 กลุ่มการทำรายการ */}
                 {userRole !== 'VIEWER' && (
                   <NavDropdown title="Operations" icon={<ArrowRightLeft size={16} />}>
                     <DropdownItem href="/inbound" icon={<PackagePlus size={16} />} label="Inbound (รับเข้า)" />
@@ -184,7 +182,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   </NavDropdown>
                 )}
                 
-                {/* 📈 กลุ่มรายงานและวางแผน */}
                 <NavDropdown title="Analytics" icon={<LineChart size={16} />}>
                   <DropdownItem href="/branch-report" icon={<Store size={16} />} label="Branch Report" />
                   {userRole !== 'VIEWER' && (
@@ -195,9 +192,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   )}
                 </NavDropdown>
 
-                {/* 🗄️ ฐานข้อมูลหลัก (เพิ่มใหม่) */}
+                {/* 🗄️ ฐานข้อมูลหลัก & ตั้งค่าระบบ (รวมอันใหม่มาไว้ตรงนี้) */}
                 {userRole !== 'VIEWER' && (
-                  <NavItem href="/master-data" icon={<Database size={16} />} label="Master Data" />
+                  <NavItem href="/dev-tools" icon={<Database size={16} />} label="Master Data & Tools" />
                 )}
 
                 {/* ⚙️ กลุ่ม Admin เท่านั้น */}
@@ -205,7 +202,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <>
                     <div className="w-[1px] h-5 bg-slate-700/50 mx-2 shrink-0"></div>
                     <NavItem href="/advanced-dashboard" icon={<Activity size={16} />} label="Adv. Dashboard" isDev />
-                    <NavItem href="/dev-tools" icon={<Settings size={16} />} label="Dev Tools" isDev />
                   </>
                 )}
               </div>
@@ -213,7 +209,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               {/* 3. เครื่องมือเสริมด้านขวา */}
               <div className="flex items-center gap-1 sm:gap-4 shrink-0">
                 
-                {/* 🔍 GLOBAL SEARCH */}
                 <div className="relative hidden xl:block group" ref={searchRef}>
                   <Search size={16} className={`absolute left-3 top-2.5 transition-colors ${showSearchDropdown ? 'text-cyan-400' : 'text-slate-400'}`} />
                   <input 
@@ -248,7 +243,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   )}
                 </div>
 
-                {/* 🔔 NOTIFICATION BELL */}
                 <div className="relative" ref={notifRef}>
                   <button onClick={() => setShowNotif(!showNotif)} className={`relative p-2 transition-colors group ${showNotif ? 'text-cyan-400' : 'text-slate-400 hover:text-cyan-300'}`}>
                     <Bell size={20} className={notifications.length > 0 ? 'animate-bounce text-orange-400' : ''}/>
@@ -280,7 +274,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
                 <div className="hidden sm:block w-[1px] h-6 bg-slate-700/50"></div>
 
-                {/* USER PROFILE */}
                 <Link href="/settings" className="hidden sm:flex items-center gap-3 group cursor-pointer">
                   <div className="text-right hidden md:block">
                     <div className="text-sm font-bold text-cyan-400 transition-colors uppercase tracking-widest">{userRole}</div>
@@ -298,7 +291,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </nav>
 
             {/* ========================================================= */}
-            {/* 📱 MOBILE MENU (ACCORDION STYLE) */}
+            {/* 📱 MOBILE MENU */}
             {/* ========================================================= */}
             {isMobileMenuOpen && (
                 <>
@@ -336,9 +329,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                             )}
                         </MobileNavGroup>
 
-                        {/* 🗄️ ฐานข้อมูลหลัก (เพิ่มใหม่) */}
+                        {/* 🗄️ ฐานข้อมูลหลัก & ตั้งค่าระบบ */}
                         {userRole !== 'VIEWER' && (
-                          <MobileNavItem href="/master-data" icon={<Database size={18}/>} label="Master Data" onClick={() => setIsMobileMenuOpen(false)}/>
+                          <MobileNavItem href="/dev-tools" icon={<Database size={18}/>} label="Master Data & Tools" onClick={() => setIsMobileMenuOpen(false)}/>
                         )}
 
                         <div className="h-px bg-slate-800/60 my-2 mx-2"></div>
@@ -348,7 +341,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                         {userRole === 'ADMIN' && (
                           <>
                              <MobileNavItem href="/advanced-dashboard" icon={<Activity size={18}/>} label="Adv. Dashboard" isDev onClick={() => setIsMobileMenuOpen(false)}/>
-                             <MobileNavItem href="/dev-tools" icon={<Settings size={18}/>} label="Dev Tools" isDev onClick={() => setIsMobileMenuOpen(false)}/>
                           </>
                         )}
                   </div>
@@ -357,7 +349,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </header>
         )}
 
-        {/* --- Main Content Area --- */}
         <main className={`flex-1 w-full flex flex-col overflow-hidden ${isLoginPage ? 'p-0' : 'pt-[72px] sm:pt-[88px] pb-2 sm:pb-4 px-2 sm:px-4'}`}>
           <div className={`flex-1 overflow-hidden relative ${isLoginPage ? 'bg-transparent' : 'bg-white rounded-2xl shadow-sm border border-slate-200'}`}>
             {children}
@@ -393,7 +384,6 @@ function NavDropdown({ title, icon, children }: { title: string, icon: React.Rea
         <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-0 h-[2px] opacity-0 group-hover:w-[calc(100%-24px)] group-hover:opacity-100 transition-all duration-300 ease-out shadow-[0_0_8px_rgba(34,211,238,0.8)] bg-cyan-400"></div>
       </button>
       
-      {/* Dropdown Panel */}
       <div className="absolute top-full left-0 pt-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 transform translate-y-2 group-hover:translate-y-0 z-50 min-w-[200px]">
         <div className="bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.5)] p-2 flex flex-col gap-1">
           {children}
