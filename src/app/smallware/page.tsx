@@ -16,10 +16,10 @@ export default function SmallwareCatalog() {
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
-  const [locationFilter, setLocationFilter] = useState('ALL'); // 🟢 เพิ่ม State สำหรับ Location Filter
+  const [locationFilter, setLocationFilter] = useState('ALL'); 
   
   const [categories, setCategories] = useState<string[]>([]);
-  const [locations, setLocations] = useState<string[]>([]); // 🟢 เพิ่ม State สำหรับเก็บตัวเลือก Location ทั้งหมด
+  const [locations, setLocations] = useState<string[]>([]); 
   
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -41,12 +41,12 @@ export default function SmallwareCatalog() {
       init();
   }, []);
 
-  // 🟢 รีเซ็ตหน้าเมื่อมีการเปลี่ยนฟิลเตอร์ใดๆ
   useEffect(() => { setCurrentPage(1); }, [searchTerm, categoryFilter, locationFilter]);
 
   const fetchCatalog = async () => {
       setLoading(true);
       try {
+          // ดึงข้อมูลหลักจาก Master Products
           const { data: prodData, error: prodErr } = await supabase
               .from('master_products')
               .select('product_id, product_name, category, base_uom, default_location, shelf_position, image_url, status')
@@ -54,25 +54,27 @@ export default function SmallwareCatalog() {
           
           if (prodErr) throw prodErr;
 
-          const { data: lotsData } = await supabase.from('inventory_lots').select('product_id, quantity, storage_location');
+          // ดึงยอดสต๊อก (ไม่ต้องสนใจ Location ใน Lot แล้ว สนใจแค่จำนวน)
+          const { data: lotsData } = await supabase.from('inventory_lots').select('product_id, quantity');
           
-          const invMap: Record<string, { qty: number, locs: Set<string> }> = {};
+          const invMap: Record<string, { qty: number }> = {};
           (lotsData || []).forEach(lot => {
-              if (!invMap[lot.product_id]) invMap[lot.product_id] = { qty: 0, locs: new Set() };
+              if (!invMap[lot.product_id]) invMap[lot.product_id] = { qty: 0 };
               invMap[lot.product_id].qty += Number(lot.quantity) || 0;
-              if (lot.storage_location) invMap[lot.product_id].locs.add(lot.storage_location);
           });
 
           const cats = new Set<string>();
-          const locs = new Set<string>(); // 🟢 สร้าง Set เก็บ Location ที่ไม่ซ้ำกัน
+          const locs = new Set<string>(); 
 
           const processed = (prodData || []).map(prod => {
               if (prod.category) cats.add(prod.category);
               
               const stockInfo = invMap[prod.product_id];
-              const actualLoc = stockInfo && stockInfo.locs.size > 0 ? Array.from(stockInfo.locs).join(', ') : prod.default_location || '-';
               
-              if (actualLoc && actualLoc !== '-') locs.add(actualLoc); // 🟢 เก็บ Location ลง Set
+              // 🚨 อัปเดตใหม่: บังคับใช้ Location และ Shelf จาก Master Products 100% (ไม่ดึงจาก Lot แล้ว)
+              const actualLoc = prod.default_location || '-';
+              
+              if (actualLoc && actualLoc !== '-') locs.add(actualLoc); 
 
               return {
                   ...prod,
@@ -89,7 +91,7 @@ export default function SmallwareCatalog() {
           });
 
           setCategories(Array.from(cats).sort());
-          setLocations(Array.from(locs).sort()); // 🟢 อัปเดตรายชื่อ Location ทั้งหมด
+          setLocations(Array.from(locs).sort()); 
           setProducts(processed);
       } catch (error: any) {
           console.error(error); alert("Error: " + error.message);
@@ -129,13 +131,12 @@ export default function SmallwareCatalog() {
       e.target.value = ''; 
   };
 
-  // 🟢 อัปเดตตรรกะการฟิลเตอร์ให้รองรับ Location
   const filteredProducts = products.filter(product => {
       const nameStr = product.product_name || '';
       const idStr = product.product_id || '';
       const matchSearch = nameStr.toLowerCase().includes(searchTerm.toLowerCase()) || idStr.toLowerCase().includes(searchTerm.toLowerCase());
       const matchCat = categoryFilter === 'ALL' || product.category === categoryFilter;
-      const matchLoc = locationFilter === 'ALL' || product.actual_location === locationFilter; // 🟢 ตรวจสอบเงื่อนไข Location
+      const matchLoc = locationFilter === 'ALL' || product.actual_location === locationFilter; 
       return matchSearch && matchCat && matchLoc;
   });
 
@@ -165,7 +166,6 @@ export default function SmallwareCatalog() {
                       {categories.map(cat => <option key={cat} value={cat}>GHC: {cat}</option>)}
                   </select>
                   
-                  {/* 🟢 Dropdown สำหรับกรอง Location */}
                   <select 
                       className="px-3 py-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white text-xs md:text-sm font-bold text-slate-700 shadow-sm cursor-pointer"
                       value={locationFilter} onChange={e => setLocationFilter(e.target.value)}
@@ -185,7 +185,7 @@ export default function SmallwareCatalog() {
               </div>
           </div>
 
-          {/* GRID GALLERY (Mobile: 2 cols, Tablet: 3 cols, Desktop: 4-5 cols) */}
+          {/* GRID GALLERY */}
           <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 pb-2">
               {loading ? (
                   <div className="flex flex-col items-center justify-center h-full text-amber-500">
@@ -225,7 +225,6 @@ export default function SmallwareCatalog() {
                                       </div>
                                   )}
 
-                                  {/* 🟢 ปุ่มอัปโหลดที่เสถียร 100% (เบราว์เซอร์จะจัดการเปิดกล้อง/คลังภาพให้เอง) */}
                                   {userRole !== 'VIEWER' && (
                                       <label className={`absolute top-2 right-2 p-2 rounded-xl cursor-pointer shadow-md backdrop-blur-md transition-transform active:scale-95 ${item.image_url ? 'bg-white/80 text-slate-600 hover:bg-white' : 'bg-amber-500 text-white hover:bg-amber-600'} ${uploadingId === item.product_id ? 'animate-pulse' : ''}`} title="เพิ่ม/เปลี่ยนรูปภาพ">
                                           <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, item.product_id)} disabled={uploadingId === item.product_id}/>
@@ -243,7 +242,6 @@ export default function SmallwareCatalog() {
 
                               {/* 📝 CONTENT AREA */}
                               <div className="p-3 flex-1 flex flex-col bg-white">
-                                  {/* 🟢 ดีไซน์ SKU ใหม่: เด่นชัดพอดีๆ ไม่รบกวนสายตา */}
                                   <div className="mb-1.5">
                                       <span className="font-mono text-xs md:text-sm font-black text-slate-800 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded shadow-sm">
                                           {item.product_id}
@@ -254,7 +252,7 @@ export default function SmallwareCatalog() {
                                       {item.product_name}
                                   </div>
                                   
-                                  {/* 🟢 Location Widget (กระทัดรัดสำหรับมือถือ) */}
+                                  {/* Location Widget */}
                                   <div className="mt-auto bg-slate-50/80 rounded-xl p-2 border border-slate-100 space-y-1.5">
                                       <div className="flex items-center justify-between">
                                           <span className="text-[9px] font-bold text-slate-400 uppercase flex items-center gap-1"><Tag size={10}/> Zone</span>
